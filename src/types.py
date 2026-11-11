@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 import numpy as np
 
@@ -72,26 +72,26 @@ class MechanismConfig:
     cost_per_audit: float = 0.1        # c_a: compute/log inspection cost per audited agent
 
 
-@dataclass
-class RoundResult:
-    """Outcome and economics of one task assignment round."""
-    task_id: int
-    assigned_set: set[int]
-    resolved: bool
-    V: float                           # 1.0 if resolved else 0.0
-    social_cost: float                 # sum_{i in A} c_i
-    social_welfare: float              # R * V - social_cost
-    oracle_assigned_set: set[int]
-    oracle_resolved: bool
-    oracle_social_welfare: float       # W(M^circ)
-    regret: float                      # W(M^circ) - W(M)
-    miss_loss: float                   # R * [V(A^circ) - V(A)]
-    excess_cost: float                 # c(A) - c(A^circ)
-    efficiency_ratio: float            # W(M) / W(M^circ)
-    brier_scores: dict[int, float]     # centered Brier scores s_tilde_i
-    credits: dict[int, float]          # credit chi_i paid
-    penalties: dict[int, float]        # audit penalties F paid
-    audited_agents: list[int]
-    contradicted_agents: list[int]
-    total_incentive_cost: float        # lambda * sum(s_tilde) + c_a * alpha * N
-    agent_utilities: dict[int, float]  # U_i realized utility
+# @dataclass
+# class RoundResult:
+#     """Outcome and economics of one task assignment round."""
+#     task_id: int
+#     assigned_set: set[int]
+#     resolved: bool
+#     V: float                           # 1.0 if resolved else 0.0
+#     social_cost: float                 # sum_{i in A} c_i
+#     social_welfare: float              # R * V - social_cost
+#     oracle_assigned_set: set[int]
+#     oracle_resolved: bool
+#     oracle_social_welfare: float       # W(M^circ)
+#     regret: float                      # W(M^circ) - W(M)
+#     miss_loss: float                   # R * [V(A^circ) - V(A)]
+#     excess_cost: float                 # c(A) - c(A^circ)
+#     efficiency_ratio: float            # W(M) / W(M^circ)
+#     brier_scores: dict[int, float]     # centered Brier scores s_tilde_i
+#     credits: dict[int, float]          # credit chi_i paid
+#     penalties: dict[int, float]        # audit penalties F paid
+#     audited_agents: list[int]
+#     contradicted_agents: list[int]
+#     total_incentive_cost: float        # lambda * sum(s_tilde) + c_a * alpha * N
+#     agent_utilities: dict[int, float]  # U_i realized utility

@@ -34,18 +34,24 @@ def test_description_router_degrades_with_staleness():
     assert fresh_hits >= stale_hits
 
 
-def test_voting_decider_returns_plurality_winner():
-    env = RepositoryEnvironment(num_agents=5, embedding_dim=8, seed=42)
+def test_voting_decider_returns_plurality_winner_without_report_leakage():
+    env = RepositoryEnvironment(num_agents=5, embedding_dim=16, seed=42)
     gen = TaskGenerator(env, coalition_size_k=1, rule=ResolutionRule.DISJUNCTIVE, seed=42)
     task = gen.generate_task(0)
+    owner = task.root_module
 
+    # Even if non-owners don't know owner's report, public profiles point toward owner
     reports = {
-        0: PublicReport(0, 0.1, EvidencePayload(0.1)),
-        1: PublicReport(1, 0.95, EvidencePayload(0.95)),
-        2: PublicReport(2, 0.1, EvidencePayload(0.1)),
-        3: PublicReport(3, 0.1, EvidencePayload(0.1)),
-        4: PublicReport(4, 0.1, EvidencePayload(0.1)),
+        i: PublicReport(i, 0.95 if i == owner else 0.05, EvidencePayload(0.5))
+        for i in range(5)
     }
-    b3 = VotingDeciderB3(seed=42)
-    assert b3.select(task, reports) == {1}
+    b3 = VotingDeciderB3(env.profiles, peer_noise_sigma=0.05, seed=42)
+    assert b3.select(task, reports) == {owner}
+
+    # Verify agent i does NOT leak peer reports r_j: if we change owner's report to 0.0,
+    # non-owners (j != owner) still vote for owner based on public capability match!
+    reports_deflect = dict(reports)
+    reports_deflect[owner] = PublicReport(owner, 0.0, EvidencePayload(0.0))
+    b3_2 = VotingDeciderB3(env.profiles, peer_noise_sigma=0.05, seed=42)
+    assert b3_2.select(task, reports_deflect) == {owner}
 

@@ -60,3 +60,35 @@ def test_evidence_engine_beliefs_and_miscalibration():
             assert pi_hat >= pi, "Overconfidence should push beliefs > 0.5 closer to 1"
         elif pi < 0.5:
             assert pi_hat <= pi, "Overconfidence should push beliefs < 0.5 closer to 0"
+
+
+def _compute_ece(probs: np.ndarray, labels: np.ndarray, n_bins: int = 5) -> float:
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    for b in range(n_bins):
+        mask = (probs >= bins[b]) & (probs <= bins[b + 1] if b == n_bins - 1 else probs < bins[b + 1])
+        if np.any(mask):
+            ece += (np.sum(mask) / len(probs)) * abs(np.mean(labels[mask]) - np.mean(probs[mask]))
+    return float(ece)
+
+
+def test_evidence_engine_calibration_ece():
+    env = RepositoryEnvironment(num_agents=8, embedding_dim=32, seed=42)
+    gen = TaskGenerator(env, coalition_size_k=2, seed=42)
+    engine = EvidenceEngine(env, obs_noise_sigma=0.15, seed=42)
+
+    probs_cal, probs_over, labels = [], [], []
+    kappas_over = np.full(8, 2.5)
+    for t_id in range(250):
+        task = gen.generate_task(t_id)
+        ev_cal = engine.generate_evidence(task)
+        ev_over = engine.generate_evidence(task, calibration_kappas=kappas_over)
+        for i in range(8):
+            probs_cal.append(ev_cal[i].pi_true)
+            probs_over.append(ev_over[i].pi_hat)
+            labels.append(task.z[i])
+
+    ece_cal = _compute_ece(np.array(probs_cal), np.array(labels))
+    ece_over = _compute_ece(np.array(probs_over), np.array(labels))
+    assert ece_cal < 0.06, f"Calibrated pi_true ECE ({ece_cal:.3f}) should be low"
+    assert ece_over > ece_cal, "Overconfidence kappa=2.5 should increase ECE"

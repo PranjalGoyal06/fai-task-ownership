@@ -76,9 +76,12 @@ def run_experiment(
         )
     )
     config_no_inc = MechanismConfig(score_scale=0.0, audit_rate=0.0)
-    b1_router = DescriptionRouterB1(env.profiles, staleness_rho=0.3, seed=seed)
+    base_rate_pi0 = k_owners / num_agents
+    b1_router = DescriptionRouterB1(
+        env.profiles, staleness_rho=0.3, prior_pi0=base_rate_pi0, seed=seed
+    )
     b2_polling = PollingRouterB2()
-    b3_voting = VotingDeciderB3(seed=seed)
+    b3_voting = VotingDeciderB3(env.profiles, seed=seed)
 
     # Performance tracking accumulators
     trackers = {
@@ -88,8 +91,6 @@ def run_experiment(
         "Voting (B3)": {"welfare": [], "regret": [], "miss_loss": [], "excess_cost": []},
         "Mechanism M": {"welfare": [], "regret": [], "miss_loss": [], "excess_cost": [], "inc_cost": []},
     }
-
-    base_rate_pi0 = k_owners / num_agents
 
     for round_id in range(num_rounds):
         task = task_gen.generate_task(task_id=round_id)

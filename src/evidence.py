@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import numpy as np
-from scipy.special import expit, logit
 
 from src.environment import RepositoryEnvironment
 from src.types import Evidence, EvidencePayload, Task
+
+
+def expit(x: float | np.ndarray) -> float | np.ndarray:
+    """Numerically stable logistic sigmoid."""
+    return 1.0 / (1.0 + np.exp(-np.clip(x, -30.0, 30.0)))
+
+
+def logit(p: float | np.ndarray) -> float | np.ndarray:
+    """Log-odds transform for p in (0, 1)."""
+    p_clipped = np.clip(p, 1e-6, 1.0 - 1e-6)
+    return np.log(p_clipped / (1.0 - p_clipped))
 
 
 class EvidenceEngine:
@@ -17,13 +27,15 @@ class EvidenceEngine:
         env: RepositoryEnvironment,
         obs_noise_sigma: float = 0.15,
         missing_evidence_prob: float = 0.0,  # gamma in [0, 1]
-        signal_sensitivity: float = 5.0,     # beta_1 in logistic link
+        signal_sensitivity: float = 8.0,     # Bayes log-likelihood slope beta_1
+        signal_midpoint: float = 0.23,       # Bayes midpoint (mu_1 + mu_0) / 2
         seed: int | None = 42,
     ):
         self.env = env
         self.obs_noise_sigma = obs_noise_sigma
         self.missing_evidence_prob = missing_evidence_prob
         self.signal_sensitivity = signal_sensitivity
+        self.signal_midpoint = signal_midpoint
         self.rng = np.random.default_rng(seed)
 
     def generate_evidence(
@@ -35,11 +47,12 @@ class EvidenceEngine:
         
         Parameters:
         - task: the incoming Task instance
-        - calibration_kappas: per-agent overconfidence exponent (kappa >= 1)
+        - calibration_kappas: per-agent distortion exponent (kappa > 0;
+          kappa=1 is calibrated, >1 overconfident, <1 underconfident)
         """
         N = self.env.num_agents
         base_rate_pi0 = len(task.S_star) / max(1, N)
-        base_logit = logit(np.clip(base_rate_pi0, 1e-4, 1.0 - 1e-4))
+        base_logit = float(logit(base_rate_pi0))
 
         if calibration_kappas is None:
             calibration_kappas = np.ones(N, dtype=float)
@@ -59,8 +72,10 @@ class EvidenceEngine:
             else:
                 noise = self.rng.normal(0, self.obs_noise_sigma)
                 raw_signal = float(sims[i] + noise)
-                # Logistic calibrated belief
-                calibrated_logit = base_logit + self.signal_sensitivity * raw_signal
+                # Bayesian calibrated log-odds centered at midpoint (mu_1 + mu_0) / 2
+                calibrated_logit = base_logit + self.signal_sensitivity * (
+                    raw_signal - self.signal_midpoint
+                )
                 pi_true = float(expit(calibrated_logit))
 
             # Ensure valid probability range

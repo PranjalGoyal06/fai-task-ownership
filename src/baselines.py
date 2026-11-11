@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import collections
 import numpy as np
-from scipy.special import expit, logit
 
+from src.evidence import expit, logit
 from src.mechanisms import AssignmentMechanism
 from src.metrics import MetricsEvaluator
 from src.types import (
@@ -26,13 +26,20 @@ class DescriptionRouterB1:
         self,
         env_profiles: np.ndarray,
         staleness_rho: float = 0.3,
-        signal_sensitivity: float = 5.0,
+        desc_noise_sigma: float = 0.25,
+        signal_sensitivity: float = 8.0,
+        signal_midpoint: float = 0.23,
+        prior_pi0: float | None = None,
         seed: int | None = 42,
     ):
         self.rho = staleness_rho
+        self.desc_noise_sigma = desc_noise_sigma
         self.signal_sensitivity = signal_sensitivity
+        self.signal_midpoint = signal_midpoint
+        self.prior_pi0 = prior_pi0
         self.rng = np.random.default_rng(seed)
         self.num_agents, dim = env_profiles.shape
+        self.mech = AssignmentMechanism(MechanismConfig(score_scale=0.0))
 
         # Copy written capability profiles and corrupt a fraction rho as stale
         self.stale_profiles = np.copy(env_profiles)
@@ -45,12 +52,14 @@ class DescriptionRouterB1:
 
     def select(self, task: Task) -> set[int]:
         N = self.num_agents
-        base_rate_pi0 = len(task.S_star) / max(1, N)
-        base_logit = logit(np.clip(base_rate_pi0, 1e-4, 1.0 - 1e-4))
+        pi0 = self.prior_pi0 if self.prior_pi0 is not None else len(task.S_star) / max(1, N)
+        base_logit = float(logit(pi0))
 
-        # Score incoming task solely against stored (partially stale) descriptions
+        # Score incoming task against stored (partially stale, coarse) descriptions
         stale_sims = self.stale_profiles @ task.t_embedding
-        stale_scores = expit(base_logit + self.signal_sensitivity * stale_sims)
+        if self.desc_noise_sigma > 0:
+            stale_sims = stale_sims + self.rng.normal(0, self.desc_noise_sigma, size=N)
+        stale_scores = expit(base_logit + self.signal_sensitivity * (stale_sims - self.signal_midpoint))
 
         # Wrap as pseudo-reports
         pseudo_reports = {
@@ -58,9 +67,7 @@ class DescriptionRouterB1:
             for i in range(N)
         }
 
-        # Apply mechanism selection rule
-        mech = AssignmentMechanism(MechanismConfig(score_scale=0.0))
-        return mech.select_agents(task, pseudo_reports)
+        return self.mech.select_agents(task, pseudo_reports)
 
 
 class PollingRouterB2:
@@ -74,24 +81,51 @@ class PollingRouterB2:
 
 
 class VotingDeciderB3:
-    """B3: Each agent votes for the agent it believes owns the task, plurality winner is assigned."""
+    """B3: Each agent votes for the agent it believes owns the task, plurality winner is assigned.
+    
+    Each agent i observes ONLY its own report/belief r_i and coarse public
+    capability similarity for peers j != i (never observing other agents' private reports r_j).
+    """
 
-    def __init__(self, seed: int | None = 42):
+    def __init__(
+        self,
+        env_profiles: np.ndarray | None = None,
+        peer_noise_sigma: float = 0.25,
+        signal_sensitivity: float = 8.0,
+        signal_midpoint: float = 0.23,
+        seed: int | None = 42,
+    ):
+        self.env_profiles = env_profiles
+        self.peer_noise_sigma = peer_noise_sigma
+        self.signal_sensitivity = signal_sensitivity
+        self.signal_midpoint = signal_midpoint
         self.rng = np.random.default_rng(seed)
 
     def select(self, task: Task, reports: dict[int, PublicReport]) -> set[int]:
         N = len(reports)
+        pi0 = len(task.S_star) / max(1, N)
+        base_logit = float(logit(pi0))
         votes: list[int] = []
 
-        # Each agent votes for the highest reported candidate (or itself if report is high)
-        r_arr = np.array([reports[i].r for i in range(N)])
+        # Public baseline similarity if profiles are provided
+        if self.env_profiles is not None:
+            public_sims = self.env_profiles @ task.t_embedding
+        else:
+            public_sims = np.zeros(N, dtype=float)
+
         for i in range(N):
-            # Vote for highest candidate with slight local noise
-            noisy_r = r_arr + self.rng.normal(0, 0.05, size=N)
-            vote = int(np.argmax(noisy_r))
+            # Agent i estimates peer probabilities from coarse public capability + local noise
+            noisy_sims = public_sims + self.rng.normal(0, self.peer_noise_sigma, size=N)
+            perceived = expit(
+                base_logit + self.signal_sensitivity * (noisy_sims - self.signal_midpoint)
+            )
+            # For itself (j == i), agent i uses its own private report/claim
+            perceived[i] = reports[i].r
+
+            vote = int(np.argmax(perceived))
             votes.append(vote)
 
-        # Plurality winner
+        # Plurality winner (with deterministic tie-break via Counter order)
         counts = collections.Counter(votes)
         winner = counts.most_common(1)[0][0]
         return {winner}
