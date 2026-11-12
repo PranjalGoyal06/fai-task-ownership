@@ -28,7 +28,7 @@ class EvidenceEngine:
         obs_noise_sigma: float = 0.15,
         missing_evidence_prob: float = 0.0,  # gamma in [0, 1]
         signal_sensitivity: float = 8.0,     # Bayes log-likelihood slope beta_1
-        signal_midpoint: float = 0.23,       # Bayes midpoint (mu_1 + mu_0) / 2
+        signal_midpoint: float | None = None, # None adapts as 0.23 * sqrt(2 / k)
         seed: int | None = 42,
     ):
         self.env = env
@@ -51,8 +51,14 @@ class EvidenceEngine:
           kappa=1 is calibrated, >1 overconfident, <1 underconfident)
         """
         N = self.env.num_agents
+        k = max(1, len(task.S_star))
         base_rate_pi0 = len(task.S_star) / max(1, N)
         base_logit = float(logit(base_rate_pi0))
+        midpoint = (
+            self.signal_midpoint
+            if self.signal_midpoint is not None
+            else float(0.23 * np.sqrt(2.0 / k))
+        )
 
         if calibration_kappas is None:
             calibration_kappas = np.ones(N, dtype=float)
@@ -74,7 +80,7 @@ class EvidenceEngine:
                 raw_signal = float(sims[i] + noise)
                 # Bayesian calibrated log-odds centered at midpoint (mu_1 + mu_0) / 2
                 calibrated_logit = base_logit + self.signal_sensitivity * (
-                    raw_signal - self.signal_midpoint
+                    raw_signal - midpoint
                 )
                 pi_true = float(expit(calibrated_logit))
 

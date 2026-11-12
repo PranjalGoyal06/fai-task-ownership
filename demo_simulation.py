@@ -54,6 +54,8 @@ def run_experiment(
     num_rounds: int = 100,
     num_agents: int = 12,
     k_owners: int = 5,
+    coalition_size_range: tuple[int, int] | None = (1, 5),
+    reward_per_owner: float | None = 5.0,
     agent_regime: str = "mixed",  # "mixed", "deflection", "acquisition"
     lambda_scale: float = 2.5,
     audit_rate: float = 0.2,
@@ -65,7 +67,14 @@ def run_experiment(
     """Runs a multi-round simulation comparing Oracle, Honest, Baselines, and the Mechanism."""
     rng = np.random.default_rng(seed)
     env = RepositoryEnvironment(num_agents=num_agents, embedding_dim=32, seed=seed)
-    task_gen = TaskGenerator(env, coalition_size_k=k_owners, rule=rule, seed=seed)
+    task_gen = TaskGenerator(
+        env,
+        coalition_size_k=k_owners,
+        coalition_size_range=coalition_size_range,
+        reward_per_owner=reward_per_owner,
+        rule=rule,
+        seed=seed,
+    )
     evidence_eng = EvidenceEngine(env, seed=seed)
 
     beta_load = 0.5 if dynamic_mode else 0.0
@@ -84,9 +93,19 @@ def run_experiment(
         )
     )
     config_no_inc = MechanismConfig(score_scale=0.0, audit_rate=0.0)
-    base_rate_pi0 = k_owners / num_agents
+    expected_k = (
+        0.5 * (coalition_size_range[0] + min(coalition_size_range[1], num_agents))
+        if coalition_size_range is not None
+        else float(k_owners)
+    )
+    base_rate_pi0 = expected_k / num_agents
+    b1_midpoint = float(0.23 * np.sqrt(2.0 / max(1.0, expected_k)))
     b1_router = DescriptionRouterB1(
-        env.profiles, staleness_rho=0.3, prior_pi0=base_rate_pi0, seed=seed
+        env.profiles,
+        staleness_rho=0.3,
+        signal_midpoint=b1_midpoint,
+        prior_pi0=base_rate_pi0,
+        seed=seed,
     )
     b2_polling = PollingRouterB2()
     b3_voting = VotingDeciderB3(env.profiles, seed=seed)
@@ -215,11 +234,12 @@ def print_comparison_table(trackers: dict, title: str):
 
 
 if __name__ == "__main__":
-    # Mode 1: Static Benchmark - Mixed Regime (4 Deflectors, 4 Acquirers, 4 Neutral, Conjunctive)
+    # Mode 1: Static Benchmark - Mixed Regime (4 Defl / 4 Acq / 4 Neut, k in 1..5, R = 5*k)
     trackers_mixed = run_experiment(
         num_rounds=100,
         num_agents=12,
-        k_owners=5,
+        coalition_size_range=(1, 5),
+        reward_per_owner=5.0,
         agent_regime="mixed",
         lambda_scale=2.5,
         audit_rate=0.2,
@@ -228,5 +248,21 @@ if __name__ == "__main__":
     )
     print_comparison_table(
         trackers_mixed,
-        "Mode 1 (Static): Mixed Regime (N=12, k=5, 4 Defl / 4 Acq / 4 Neut, Conjunctive)",
+        "Mode 1 (Static): Mixed Regime (N=12, k in 1..5, R=5*k, lam=2.5, Conjunctive)",
+    )
+
+    trackers_mixed_hi = run_experiment(
+        num_rounds=100,
+        num_agents=12,
+        coalition_size_range=(1, 5),
+        reward_per_owner=5.0,
+        agent_regime="mixed",
+        lambda_scale=5.0,
+        audit_rate=0.2,
+        dynamic_mode=False,
+        seed=42,
+    )
+    print_comparison_table(
+        trackers_mixed_hi,
+        "Mode 1 (Static): Mixed Regime (N=12, k in 1..5, R=5*k, lam=5.0, Conjunctive)",
     )

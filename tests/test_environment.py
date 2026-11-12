@@ -38,6 +38,24 @@ def test_task_generator_weighted_embedding():
         assert root_sim > sims[j], f"Root module {task.root_module} sim ({root_sim}) should exceed non-owner {j} sim ({sims[j]})"
 
 
+def test_task_generator_random_coalition_and_scaled_reward():
+    env = RepositoryEnvironment(num_agents=12, embedding_dim=32, seed=42)
+    gen = TaskGenerator(
+        env,
+        coalition_size_range=(1, 5),
+        reward_per_owner=5.0,
+        seed=123,
+    )
+    sizes = set()
+    for t_id in range(40):
+        task = gen.generate_task(t_id)
+        k = len(task.S_star)
+        assert 1 <= k <= 5
+        assert np.isclose(task.R, 5.0 * k)
+        sizes.add(k)
+    assert len(sizes) > 1
+
+
 def test_evidence_engine_beliefs_and_miscalibration():
     env = RepositoryEnvironment(num_agents=6, embedding_dim=16, seed=42)
     generator = TaskGenerator(env, coalition_size_k=2, seed=42)

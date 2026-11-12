@@ -66,11 +66,13 @@ class TaskGenerator:
         self,
         env: RepositoryEnvironment,
         coalition_size_k: int = 2,
+        coalition_size_range: tuple[int, int] | None = None,
         cluster_prob: float = 0.7,
         hop_decay: float = 0.5,
         min_member_weight: float = 0.4,
         task_noise_sigma: float = 0.2,
         resolution_reward: float = 10.0,
+        reward_per_owner: float | None = None,
         default_cost: float = 1.0,
         agent_costs: np.ndarray | None = None,
         rule: ResolutionRule = ResolutionRule.CONJUNCTIVE,
@@ -78,11 +80,17 @@ class TaskGenerator:
     ):
         self.env = env
         self.k = min(coalition_size_k, env.num_agents)
+        if coalition_size_range is not None:
+            k_min, k_max = coalition_size_range
+            if k_min < 1 or k_max < k_min:
+                raise ValueError("coalition_size_range must satisfy 1 <= k_min <= k_max")
+        self.coalition_size_range = coalition_size_range
         self.cluster_prob = cluster_prob
         self.hop_decay = hop_decay
         self.min_member_weight = min_member_weight
         self.task_noise_sigma = task_noise_sigma
         self.R = resolution_reward
+        self.reward_per_owner = reward_per_owner
         self.default_cost = default_cost
         if agent_costs is not None:
             if len(agent_costs) != env.num_agents:
@@ -96,25 +104,30 @@ class TaskGenerator:
     def generate_task(self, task_id: int) -> Task:
         """Synthesizes one task/issue instance."""
         N = self.env.num_agents
+        if self.coalition_size_range is not None:
+            k_min, k_max = self.coalition_size_range
+            k_target = int(self.rng.integers(k_min, min(k_max, N) + 1))
+        else:
+            k_target = self.k
 
         # 1. Pick root-cause seed module s_0
         root_module = int(self.rng.integers(0, N))
         S_star = {root_module}
 
         # 2. Expand S_star (cluster-based along G vs random)
-        if self.k > 1:
+        if k_target > 1:
             use_cluster = self.rng.random() < self.cluster_prob
             if use_cluster:
                 # 1-hop neighbors of root_module
                 candidates = list(self.env.get_neighbors(root_module))
                 self.rng.shuffle(candidates)
                 for cand in candidates:
-                    if len(S_star) >= self.k:
+                    if len(S_star) >= k_target:
                         break
                     S_star.add(cand)
 
                 # Unbiased 2-hop expansion using a deduplicated set
-                if len(S_star) < self.k:
+                if len(S_star) < k_target:
                     two_hop_set: set[int] = set()
                     for s in S_star:
                         for nbr in self.env.get_neighbors(s):
@@ -123,15 +136,15 @@ class TaskGenerator:
                     two_hop = sorted(two_hop_set)
                     self.rng.shuffle(two_hop)
                     for cand in two_hop:
-                        if len(S_star) >= self.k:
+                        if len(S_star) >= k_target:
                             break
                         S_star.add(cand)
 
             # Fallback to uniform random if unclustered or neighborhood exhausted
-            if len(S_star) < self.k:
+            if len(S_star) < k_target:
                 remaining = sorted(set(range(N)) - S_star)
                 self.rng.shuffle(remaining)
-                needed = self.k - len(S_star)
+                needed = k_target - len(S_star)
                 S_star.update(remaining[:needed])
 
         # 3. Indicator vector z
@@ -156,13 +169,19 @@ class TaskGenerator:
         t_norm = np.linalg.norm(t_vec)
         t_embedding = t_vec / max(t_norm, 1e-9)
 
+        task_R = (
+            float(self.reward_per_owner * len(S_star))
+            if self.reward_per_owner is not None
+            else float(self.R)
+        )
+
         return Task(
             task_id=task_id,
             t_embedding=t_embedding,
             root_module=root_module,
             S_star=S_star,
             z=z,
-            R=self.R,
+            R=task_R,
             costs=self.agent_costs.copy(),
             rule=self.rule,
         )
