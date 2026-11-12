@@ -65,7 +65,27 @@ pytest tests -v
 
 ---
 
-## Running the Simulation
+## Running the Interactive Streamlit UI
+
+Launch the interactive web application to tune all system constants, test benchmarks, inspect module topologies, step through individual task rounds, and run live sensitivity sweeps:
+
+```bash
+streamlit run app.py
+```
+
+Features included in the web UI:
+- **🎛️ Tunable Parameters with One-Liner Descriptions**: Tune every single constant across the environment, evidence calibration, scoring rules, graph audits, coalition credits, strategic learning, and baselines.
+- **⚡ Benchmark Presets**: 1-click execution for standard Mode 1 benchmarks, Mode 2 dynamic workloads, deflection crises, acquisition hoarding, and high-staleness stress tests.
+- **📊 Comparative Benchmark Results**: Top-level KPI scorecards, comparison tables matching `demo_simulation.py`, and interactive Plotly regret decomposition stacks ($\Delta V$ Miss Loss vs $\Delta C$ Excess Cost).
+- **📈 Convergence Dynamics**: Multi-round cumulative welfare, running regret trajectories, and dynamic workload fatigue evolution.
+- **🔬 Strategic Shading & Audits**: Live scatter plots showing how ex-post proper scoring ($\lambda$) contracts strategic misreporting cones back toward truthful beliefs, along with audit deterrence metrics.
+- **🕸️ Repository Topology & Round Inspector**: Interactive 2D dependency graph $G$ and round-by-round task inspection with root-cause tracking and assignment comparisons.
+- **🎛️ Sensitivity Sweeps**: Automated parameter sweep tool to plot continuous regret and welfare curves across any parameter range.
+- **📖 FAI Theoretical Guide**: Full reference of mathematical formulas, assumptions, and research questions.
+
+---
+
+## Running the Simulation via CLI
 
 Execute the multi-round benchmark simulation comparing Oracle (B4), Stale Description Router (B1), Polling Router without incentives (B2), Voting (B3), and our Incentive Mechanism (M):
 

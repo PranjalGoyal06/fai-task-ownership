@@ -3,3 +3,6 @@ scipy>=1.10.0
 networkx>=3.0
 pytest>=7.0.0
 matplotlib>=3.7.0
+pandas>=2.0.0
+streamlit>=1.30.0
+plotly>=5.15.0

@@ -18,6 +18,13 @@ class StrategicAgent:
         alpha_credit_ema: float = 0.1, # smoothing factor for expected credit
         load_decay: float = 0.6,       # decay factor per round for recent work load
         seed: int | None = 42,
+        theta0: float = -2.0,          # initial assignment logistic intercept
+        theta1: float = 4.0,           # initial assignment logistic slope
+        online_lr: float = 0.05,       # learning rate for online logistic regression
+        evasion_benefit_factor: float = 0.5, # factor relating ell to evasion benefit
+        tamper_deflect_signal: float = -0.5, # forged signal for deflectors
+        tamper_acquire_signal: float = 1.0,  # forged signal for acquirers
+        fp_iterations: int = 8,        # fixed-point iteration rounds for report shading
     ):
         self.agent_id = agent_id
         self.base_ell = base_ell
@@ -34,8 +41,13 @@ class StrategicAgent:
         self.assignment_history: list[tuple[float, bool]] = []
 
         # Learned assignment curve parameters: X(r) = sigma(theta0 + theta1 * r)
-        self.theta0: float = -2.0
-        self.theta1: float = 4.0
+        self.theta0: float = theta0
+        self.theta1: float = theta1
+        self.online_lr: float = online_lr
+        self.evasion_benefit_factor: float = evasion_benefit_factor
+        self.tamper_deflect_signal: float = tamper_deflect_signal
+        self.tamper_acquire_signal: float = tamper_acquire_signal
+        self.fp_iterations: int = fp_iterations
 
     @property
     def current_ell(self) -> float:
@@ -66,7 +78,7 @@ class StrategicAgent:
         # Perform online logistic regression update
         pred = 1.0 / (1.0 + np.exp(-np.clip(self.theta0 + self.theta1 * report_r, -10.0, 10.0)))
         error = (1.0 if was_assigned else 0.0) - pred
-        lr = 0.05
+        lr = self.online_lr
         self.theta0 += lr * error
         self.theta1 += lr * error * report_r
         # Keep theta1 positive (higher report -> higher assignment chance)
@@ -92,7 +104,7 @@ class StrategicAgent:
         expected_penalty = q_i * config.audit_penalty
 
         # Expected benefit of fabricating payload
-        evasion_benefit = abs(self.effective_ell) * 0.5
+        evasion_benefit = abs(self.effective_ell) * self.evasion_benefit_factor
 
         # Tamper only if expected gain outweighs expected penalty
         return bool(evasion_benefit > expected_penalty)
@@ -116,7 +128,7 @@ class StrategicAgent:
                 # Damped fixed-point iteration for r*:
                 # r* = clip(pi_hat - (eff_ell / (2 * lambda)) * X'(r*), 0, 1)
                 r = pi_hat
-                for _ in range(8):
+                for _ in range(self.fp_iterations):
                     slope = self.estimate_marginal_assignment_prob(r)
                     shading = (eff_ell / (2.0 * config.score_scale)) * slope
                     r_next = float(np.clip(pi_hat - shading, 0.0, 1.0))
@@ -130,7 +142,7 @@ class StrategicAgent:
         claimed_signal = evidence.payload.claimed_signal
         if should_tamper:
             # Forge claimed signal to match deflection (low) or acquisition (high)
-            claimed_signal = -0.5 if eff_ell > 0 else 1.0
+            claimed_signal = self.tamper_deflect_signal if eff_ell > 0 else self.tamper_acquire_signal
 
         submitted_payload = EvidencePayload(
             claimed_signal=float(claimed_signal),
