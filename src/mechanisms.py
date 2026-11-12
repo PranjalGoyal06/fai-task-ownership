@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
 import math
 import networkx as nx
 import numpy as np
@@ -31,10 +30,11 @@ class AssignmentMechanism:
         task: Task,
         reports: dict[int, PublicReport],
         graph: nx.Graph | None = None,
+        rng: np.random.Generator | None = None,
     ) -> set[int]:
         """Selects assigned set A subseteq [N] based on task resolution rule."""
         if task.rule == ResolutionRule.DISJUNCTIVE:
-            return self._select_escalation(task, reports)
+            return self._select_escalation(task, reports, rng=rng)
         else:
             return self._select_conjunctive(task, reports)
 
@@ -42,20 +42,22 @@ class AssignmentMechanism:
         self,
         task: Task,
         reports: dict[int, PublicReport],
+        rng: np.random.Generator | None = None,
     ) -> set[int]:
-        """Escalation rule: order agents by r_i / c_i descending; assign until resolved."""
+        """Escalation rule: order agents by r_i / c_i descending with randomized tie-breaks."""
         N = len(reports)
-        # Sort by efficiency ratio r_i / c_i descending
+        tie_rng = rng if rng is not None else np.random.default_rng()
+        # Sort by efficiency ratio r_i / c_i descending; break exact ties randomly
         r_over_c = []
         for i in range(N):
             c_i = max(task.costs[i], 1e-4)
             r_i = reports[i].r
-            r_over_c.append((r_i / c_i, i))
+            r_over_c.append((r_i / c_i, float(tie_rng.random()), i))
 
-        r_over_c.sort(key=lambda x: x[0], reverse=True)
+        r_over_c.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
         assigned: set[int] = set()
-        for _, agent_id in r_over_c:
+        for _, _, agent_id in r_over_c:
             assigned.add(agent_id)
             # In simulation, escalation stops as soon as a required owner is reached
             if agent_id in task.S_star:
@@ -69,36 +71,32 @@ class AssignmentMechanism:
         reports: dict[int, PublicReport],
     ) -> set[int]:
         """Conjunctive set selection (Equation 2 in proposal):
-        
+
         A(r) in argmax_{A subseteq [N]} { R * prod_{j not in A} (1 - r_j) - sum_{i in A} c_i }
         """
         N = len(reports)
-        r_arr = np.array([reports[i].r for i in range(N)])
-        costs = task.costs
-        R = task.R
+        if N == 0:
+            return set()
 
-        # For N <= 16, perform exact combinatorial search
-        if N <= 16:
-            best_A: set[int] = set()
-            best_val = -float("inf")
+        r_arr = np.array([reports[i].r for i in range(N)], dtype=float)
+        costs = np.asarray(task.costs, dtype=float)
+        R = float(task.R)
 
-            for k in range(N + 1):
-                for subset in itertools.combinations(range(N), k):
-                    A = set(subset)
-                    # Compute prod_{j not in A} (1 - r_j)
-                    prob_no_missed = 1.0
-                    for j in range(N):
-                        if j not in A:
-                            prob_no_missed *= (1.0 - r_arr[j])
+        # For N <= 14 (up to 16,384 coalitions), perform vectorized exact combinatorial search
+        if N <= 14:
+            subset_indices = np.arange(1 << N, dtype=np.uint32)[:, None]
+            bit_positions = np.arange(N, dtype=np.uint32)[None, :]
+            masks = ((subset_indices >> bit_positions) & 1).astype(bool)
 
-                    cost_A = sum(costs[i] for i in A)
-                    obj = R * prob_no_missed - cost_A
+            # prod_{j not in A} (1 - r_j): substitute 1.0 when j in A
+            one_minus_r = 1.0 - r_arr
+            factors = np.where(~masks, one_minus_r[None, :], 1.0)
+            prob_no_missed = factors.prod(axis=1)
+            cost_A = masks @ costs
 
-                    if obj > best_val:
-                        best_val = obj
-                        best_A = A
-
-            return best_A
+            objs = R * prob_no_missed - cost_A
+            best_idx = int(np.argmax(objs))
+            return set(np.flatnonzero(masks[best_idx]).tolist())
         else:
             # Greedy marginal search for larger N
             current_A: set[int] = set()
@@ -166,7 +164,12 @@ class AssignmentMechanism:
         rng: np.random.Generator,
     ) -> tuple[dict[int, float], list[int], list[int], float]:
         """Executes stochastic audits along dependency graph G.
-        
+
+        Audit target selection (`rng.random() < audit_rate`) is blind to tampering.
+        `is_tampered_ground_truth` is used only inside an audit to simulate whether
+        cross-checking neighbor telemetry uncovers a contradiction (probability
+        1 - (1 - delta)^deg(i) when tampered, 0 otherwise).
+
         Returns:
         - penalties: dict of penalty amount per agent
         - audited_agents: list of audited agent IDs
@@ -245,33 +248,28 @@ class AssignmentMechanism:
         task: Task,
         assigned_set: set[int],
     ) -> dict[int, float]:
-        """Computes exact Shapley values psi_i(v_A) for cooperative game v_A(T) = R * V(T; S*)."""
+        """Computes exact Shapley values psi_i(v_A) for v_A(T) = R * V(T; S*) in O(N) time.
+
+        For v_A(T) in {0, R}:
+        - CONJUNCTIVE (AND unanimity over S*): if S* subseteq A, each i in S* gets R / |S*|; else 0.
+        - DISJUNCTIVE (OR symmetric over K = A cap S*): if K non-empty, each i in K gets R / |K|; else 0.
+        All non-critical agents in A \\ S* are dummy players and receive 0.0.
+        """
         N = len(task.costs)
         credits = {i: 0.0 for i in range(N)}
-        A = sorted(list(assigned_set))
-        m = len(A)
-
-        if m == 0:
+        if not assigned_set or not task.S_star:
             return credits
 
-        def v(coalition: set[int]) -> float:
-            if task.rule == ResolutionRule.CONJUNCTIVE:
-                return task.R if task.S_star.issubset(coalition) else 0.0
-            else:
-                return task.R if bool(task.S_star.intersection(coalition)) else 0.0
+        if task.rule == ResolutionRule.CONJUNCTIVE:
+            critical_agents = task.S_star if task.S_star.issubset(assigned_set) else set()
+        else:
+            critical_agents = assigned_set & task.S_star
 
-        # Combinatorial Shapley computation over subsets of A
-        fact = math.factorial
-        for i in A:
-            val = 0.0
-            others = [j for j in A if j != i]
-            for s in range(len(others) + 1):
-                weight = (fact(s) * fact(m - s - 1)) / fact(m)
-                for subset in itertools.combinations(others, s):
-                    T = set(subset)
-                    marginal = v(T | {i}) - v(T)
-                    if marginal != 0.0:
-                        val += weight * marginal
-            credits[i] = float(val)
+        if not critical_agents:
+            return credits
+
+        payout = float(task.R / len(critical_agents))
+        for i in critical_agents:
+            credits[i] = payout
 
         return credits

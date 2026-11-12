@@ -1,5 +1,7 @@
 """Tests for selection rules and graph audits."""
 
+import itertools
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -91,3 +93,72 @@ def test_graph_audits_detection_frequency():
     empirical_q0 = contradiction_count / runs
     # Theoretical q0 = 1.0 * [1 - (1 - 0.4)^5] = 1 - 0.6^5 = 1 - 0.07776 = 0.92224
     assert np.isclose(empirical_q0, 0.922, atol=0.03)
+
+
+def test_escalation_tiebreak_is_randomized():
+    costs = np.ones(6)
+    # Only agent 5 is the true owner; all reports are tied at 0.0
+    task = Task(
+        task_id=3,
+        t_embedding=np.zeros(6),
+        root_module=5,
+        S_star={5},
+        z=np.array([0, 0, 0, 0, 0, 1]),
+        R=10.0,
+        costs=costs,
+        rule=ResolutionRule.DISJUNCTIVE,
+    )
+    reports = {i: PublicReport(i, 0.0, EvidencePayload(0.0)) for i in range(6)}
+    mech = AssignmentMechanism(MechanismConfig())
+
+    assigned_sizes = {
+        len(mech.select_agents(task, reports, rng=np.random.default_rng(seed)))
+        for seed in range(25)
+    }
+    # Deterministic index tie-breaking would always visit 0..5 -> size 6 every time.
+    assert len(assigned_sizes) > 1
+
+
+def test_vectorized_conjunctive_matches_combinatorial_search():
+    rng = np.random.default_rng(42)
+    N = 6
+    costs = rng.uniform(0.5, 2.5, size=N)
+    r_vals = rng.uniform(0.05, 0.95, size=N)
+    task = Task(
+        task_id=4,
+        t_embedding=np.zeros(N),
+        root_module=0,
+        S_star={0, 2},
+        z=np.array([1, 0, 1, 0, 0, 0]),
+        R=18.0,
+        costs=costs,
+        rule=ResolutionRule.CONJUNCTIVE,
+    )
+    reports = {i: PublicReport(i, float(r_vals[i]), EvidencePayload(float(r_vals[i]))) for i in range(N)}
+    mech = AssignmentMechanism(MechanismConfig())
+
+    assigned = mech.select_agents(task, reports)
+
+    # Brute-force objective check
+    best_obj = -float("inf")
+    best_set = set()
+    for k in range(N + 1):
+        for subset in itertools.combinations(range(N), k):
+            A = set(subset)
+            prob = 1.0
+            for j in range(N):
+                if j not in A:
+                    prob *= (1.0 - r_vals[j])
+            obj = task.R * prob - sum(costs[i] for i in A)
+            if obj > best_obj:
+                best_obj = obj
+                best_set = A
+
+    assigned_prob = 1.0
+    for j in range(N):
+        if j not in assigned:
+            assigned_prob *= (1.0 - r_vals[j])
+    assigned_obj = task.R * assigned_prob - sum(costs[i] for i in assigned)
+
+    assert np.isclose(assigned_obj, best_obj)
+    assert assigned == best_set

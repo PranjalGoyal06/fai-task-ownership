@@ -66,3 +66,49 @@ def test_audit_penalty_deters_tampering(sample_evidence):
     # High audit rate and penalty -> deters tampering
     config_strict = MechanismConfig(score_scale=0.0, audit_rate=0.5, audit_penalty=20.0, audit_detection_delta=0.5)
     assert agent.decide_tampering(sample_evidence, config_strict, degree_m=3) is False
+
+
+def test_tampering_alters_claimed_signal(sample_evidence):
+    deflector = StrategicAgent(agent_id=1, base_ell=3.0)
+    acquirer = StrategicAgent(agent_id=2, base_ell=-3.0)
+    config_lax = MechanismConfig(score_scale=0.0, audit_rate=0.0, audit_penalty=0.0)
+
+    rep_deflect = deflector.compute_report(sample_evidence, config_lax, degree_m=2)
+    rep_acquire = acquirer.compute_report(sample_evidence, config_lax, degree_m=2)
+
+    assert rep_deflect.payload.is_tampered_ground_truth is True
+    assert rep_deflect.payload.claimed_signal < sample_evidence.payload.claimed_signal
+    assert rep_acquire.payload.is_tampered_ground_truth is True
+    assert rep_acquire.payload.claimed_signal > sample_evidence.payload.claimed_signal
+
+
+def test_online_learning_assignment_curve():
+    agent = StrategicAgent(agent_id=0, base_ell=1.0, seed=42)
+    # Before 8 observations, uses baseline slope 1.0
+    assert agent.estimate_marginal_assignment_prob(0.5) == 1.0
+
+    # Feed 40 rounds where reports >= 0.6 are assigned and < 0.6 are not
+    for i in range(40):
+        r = 0.8 if i % 2 == 0 else 0.2
+        agent.update_assignment_model(r, was_assigned=(r >= 0.6))
+
+    assert len(agent.assignment_history) == 40
+    # Slope near decision boundary should be positive and bounded
+    slope_mid = agent.estimate_marginal_assignment_prob(0.5)
+    assert 0.1 <= slope_mid <= 2.5
+
+
+def test_dynamic_workload_stays_bounded_and_tracks_credit():
+    agent = StrategicAgent(agent_id=0, base_ell=-2.0, beta_load=0.5, load_decay=0.6, seed=42)
+    for _ in range(200):
+        agent.record_round_outcome(credit_earned=5.0, penalty_incurred=0.5, was_assigned=True, task_resolved=True)
+
+    # Under decayed recent load with decay 0.6, steady-state cap is 1 / (1 - 0.6) = 2.5
+    assert np.isclose(agent.recent_load, 2.5, atol=1e-4)
+    assert np.isclose(agent.credit_ema, 5.0, atol=0.1)
+    assert np.isclose(agent.total_penalties, 100.0)
+
+    # When idle for several rounds, recent_load decays back toward 0
+    for _ in range(20):
+        agent.record_round_outcome(credit_earned=0.0, penalty_incurred=0.0, was_assigned=False, task_resolved=True)
+    assert agent.recent_load < 0.01

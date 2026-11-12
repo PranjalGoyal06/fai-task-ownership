@@ -14,19 +14,23 @@ class StrategicAgent:
         self,
         agent_id: int,
         base_ell: float = 0.0,         # > 0 deflector, < 0 acquirer, 0 aligned
-        beta_load: float = 0.5,        # sensitivity to workload backlog
+        beta_load: float = 0.5,        # sensitivity to recent work fatigue
         alpha_credit_ema: float = 0.1, # smoothing factor for expected credit
+        load_decay: float = 0.6,       # decay factor per round for recent work load
         seed: int | None = 42,
     ):
         self.agent_id = agent_id
         self.base_ell = base_ell
         self.beta_load = beta_load
         self.alpha_credit_ema = alpha_credit_ema
+        self.load_decay = load_decay
         self.rng = np.random.default_rng(seed)
 
         # Dynamic state
-        self.active_workload: int = 0
+        self.recent_load: float = 0.0
         self.credit_ema: float = 0.0
+        self.total_credits: float = 0.0
+        self.total_penalties: float = 0.0
         self.assignment_history: list[tuple[float, bool]] = []
 
         # Learned assignment curve parameters: X(r) = sigma(theta0 + theta1 * r)
@@ -35,8 +39,8 @@ class StrategicAgent:
 
     @property
     def current_ell(self) -> float:
-        """Dynamic private cost: ell_i(t) = base_ell + beta_load * workload."""
-        return float(self.base_ell + self.beta_load * self.active_workload)
+        """Dynamic private cost: ell_i(t) = base_ell + beta_load * recent_load."""
+        return float(self.base_ell + self.beta_load * self.recent_load)
 
     @property
     def effective_ell(self) -> float:
@@ -79,7 +83,7 @@ class StrategicAgent:
         if abs(self.effective_ell) < 1e-4:
             return False
 
-        # If audits are off or penalty is 0, deflector or acquirer might tamper freely
+        # If audits are off or penalty is 0, strong deflectors/acquirers tamper freely
         if config.audit_rate <= 1e-4 or config.audit_penalty <= 1e-4:
             return abs(self.effective_ell) > 1.0
 
@@ -87,7 +91,7 @@ class StrategicAgent:
         q_i = config.audit_rate * (1.0 - (1.0 - config.audit_detection_delta) ** degree_m)
         expected_penalty = q_i * config.audit_penalty
 
-        # Expected benefit of complete evasion or false claiming
+        # Expected benefit of fabricating payload
         evasion_benefit = abs(self.effective_ell) * 0.5
 
         # Tamper only if expected gain outweighs expected penalty
@@ -109,22 +113,27 @@ class StrategicAgent:
         else:
             # 2. Strategic agent under scoring (lambda > 0)
             if config.score_scale > 1e-4:
-                # Fixed-point approximation for r*: r* = clip(pi_hat - (eff_ell / (2 * lambda)) * X'(r*))
+                # Damped fixed-point iteration for r*:
+                # r* = clip(pi_hat - (eff_ell / (2 * lambda)) * X'(r*), 0, 1)
                 r = pi_hat
-                for _ in range(5):
+                for _ in range(8):
                     slope = self.estimate_marginal_assignment_prob(r)
                     shading = (eff_ell / (2.0 * config.score_scale)) * slope
-                    r = np.clip(pi_hat - shading, 0.0, 1.0)
+                    r_next = float(np.clip(pi_hat - shading, 0.0, 1.0))
+                    r = 0.5 * r + 0.5 * r_next
             else:
                 # 3. Without scoring (lambda = 0): extreme unmediated reporting
                 r = 0.0 if eff_ell > 0 else 1.0
 
-        # 4. Decide tampering
+        # 4. Decide tampering and construct submitted payload
         should_tamper = self.decide_tampering(evidence, config, degree_m)
+        claimed_signal = evidence.payload.claimed_signal
+        if should_tamper:
+            # Forge claimed signal to match deflection (low) or acquisition (high)
+            claimed_signal = -0.5 if eff_ell > 0 else 1.0
 
-        # Build submitted payload (is_tampered_ground_truth is private to the artifact)
         submitted_payload = EvidencePayload(
-            claimed_signal=evidence.payload.claimed_signal,
+            claimed_signal=float(claimed_signal),
             is_tampered_ground_truth=should_tamper,
         )
 
@@ -142,15 +151,16 @@ class StrategicAgent:
         task_resolved: bool,
     ) -> None:
         """Updates internal dynamic state following round settlement."""
+        self.total_credits += credit_earned
+        self.total_penalties += penalty_incurred
+
         if was_assigned:
-            # Update EMA of received credit
+            # Update EMA of realized credit (0.0 if conjunctive task failed)
+            realized_credit = credit_earned if task_resolved else 0.0
             self.credit_ema = (
                 (1.0 - self.alpha_credit_ema) * self.credit_ema
-                + self.alpha_credit_ema * credit_earned
+                + self.alpha_credit_ema * realized_credit
             )
-            # Increase workload
-            self.active_workload += 1
 
-        # Simulate gradual resolution of active tasks
-        if self.active_workload > 0 and self.rng.random() < 0.4:
-            self.active_workload -= 1
+        # Task finishes before next issue; recent_load decays and increments if assigned
+        self.recent_load = self.load_decay * self.recent_load + (1.0 if was_assigned else 0.0)

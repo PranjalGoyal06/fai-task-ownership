@@ -24,18 +24,26 @@ def _init_agents(
     seed: int,
 ) -> dict[int, StrategicAgent]:
     """Creates an isolated population of agents for a single system."""
+    if agent_regime == "deflection":
+        n_deflect = num_agents // 2
+        n_acquire = 0
+    elif agent_regime == "acquisition":
+        n_deflect = 0
+        n_acquire = num_agents // 2
+    else:
+        # Target ~30% deflectors, ~30% acquirers, ~40% neutral
+        n_deflect = round(0.3 * num_agents)
+        n_acquire = round(0.3 * num_agents)
+
+    n_neutral = max(0, num_agents - n_deflect - n_acquire)
+    ells = [2.0] * n_deflect + [-2.0] * n_acquire + [0.0] * n_neutral
+    np.random.default_rng(seed).shuffle(ells)
+
     agents: dict[int, StrategicAgent] = {}
     for i in range(num_agents):
-        if agent_regime == "deflection":
-            ell = 2.0 if (i % 2 == 0) else 0.0  # 50% deflectors, 50% aligned
-        elif agent_regime == "acquisition":
-            ell = -2.0 if (i % 2 == 0) else 0.0  # 50% acquirers, 50% aligned
-        else:
-            ell = 2.0 if (i % 3 == 0) else (-2.0 if (i % 3 == 1) else 0.0)
-
         agents[i] = StrategicAgent(
             agent_id=i,
-            base_ell=ell,
+            base_ell=ells[i],
             beta_load=beta_load,
             seed=seed + i,
         )
@@ -44,9 +52,9 @@ def _init_agents(
 
 def run_experiment(
     num_rounds: int = 100,
-    num_agents: int = 8,
-    k_owners: int = 2,
-    agent_regime: str = "deflection",  # "deflection", "acquisition", "mixed"
+    num_agents: int = 12,
+    k_owners: int = 5,
+    agent_regime: str = "mixed",  # "mixed", "deflection", "acquisition"
     lambda_scale: float = 2.5,
     audit_rate: float = 0.2,
     credit_rule: CreditRule = CreditRule.SHAPLEY,
@@ -54,9 +62,9 @@ def run_experiment(
     dynamic_mode: bool = False,
     seed: int = 42,
 ):
-    """Runs a multi-round simulation comparing Oracle, Baselines, and the Mechanism."""
+    """Runs a multi-round simulation comparing Oracle, Honest, Baselines, and the Mechanism."""
     rng = np.random.default_rng(seed)
-    env = RepositoryEnvironment(num_agents=num_agents, embedding_dim=16, seed=seed)
+    env = RepositoryEnvironment(num_agents=num_agents, embedding_dim=32, seed=seed)
     task_gen = TaskGenerator(env, coalition_size_k=k_owners, rule=rule, seed=seed)
     evidence_eng = EvidenceEngine(env, seed=seed)
 
@@ -86,6 +94,7 @@ def run_experiment(
     # Performance tracking accumulators
     trackers = {
         "Oracle (B4)": {"welfare": [], "cost": [], "resolved": []},
+        "Honest (pi_true)": {"welfare": [], "regret": [], "miss_loss": [], "excess_cost": []},
         "Description (B1)": {"welfare": [], "regret": [], "miss_loss": [], "excess_cost": []},
         "Polling Router (B2)": {"welfare": [], "regret": [], "miss_loss": [], "excess_cost": []},
         "Voting (B3)": {"welfare": [], "regret": [], "miss_loss": [], "excess_cost": []},
@@ -129,6 +138,8 @@ def run_experiment(
         A_B3 = b3_voting.select(task, reports_B2)
 
         # Evaluate Regret and Welfare
+        A_H, _, _, _ = MetricsEvaluator.compute_truthful_benchmark(task, evidence_dict)
+        reg_H = MetricsEvaluator.compute_regret_decomposition(task, A_H)
         reg_M = MetricsEvaluator.compute_regret_decomposition(task, A_M)
         reg_B1 = MetricsEvaluator.compute_regret_decomposition(task, A_B1)
         reg_B2 = MetricsEvaluator.compute_regret_decomposition(task, A_B2)
@@ -164,6 +175,7 @@ def run_experiment(
 
         # Accumulate metrics
         for name, res in [
+            ("Honest (pi_true)", reg_H),
             ("Description (B1)", reg_B1),
             ("Polling Router (B2)", reg_B2),
             ("Voting (B3)", reg_B3),
@@ -189,7 +201,7 @@ def print_comparison_table(trackers: dict, title: str):
     o_welfare = np.mean(trackers["Oracle (B4)"]["welfare"])
     print(f"{'Oracle (B4)':<22} | {o_welfare:9.2f} | {0.0:9.2f} | {0.0:9.2f} | {0.0:11.2f}")
 
-    for name in ["Description (B1)", "Polling Router (B2)", "Voting (B3)", "Mechanism M"]:
+    for name in ["Honest (pi_true)", "Description (B1)", "Polling Router (B2)", "Voting (B3)", "Mechanism M"]:
         w = np.mean(trackers[name]["welfare"])
         reg = np.mean(trackers[name]["regret"])
         miss = np.mean(trackers[name]["miss_loss"])
@@ -203,28 +215,18 @@ def print_comparison_table(trackers: dict, title: str):
 
 
 if __name__ == "__main__":
-    # Mode 1: Static Benchmark - Deflection Regime (Task evasion -> High Miss Loss in B2)
-    trackers_deflect = run_experiment(
+    # Mode 1: Static Benchmark - Mixed Regime (4 Deflectors, 4 Acquirers, 4 Neutral, Conjunctive)
+    trackers_mixed = run_experiment(
         num_rounds=100,
-        num_agents=8,
-        k_owners=2,
-        agent_regime="deflection",
+        num_agents=12,
+        k_owners=5,
+        agent_regime="mixed",
         lambda_scale=2.5,
         audit_rate=0.2,
         dynamic_mode=False,
         seed=42,
     )
-    print_comparison_table(trackers_deflect, "Mode 1 (Static): Deflection Regime (50% Deflectors, Conjunctive)")
-
-    # Mode 1: Static Benchmark - Acquisition Regime (Task hoarding -> High Excess Cost in B2)
-    trackers_acquire = run_experiment(
-        num_rounds=100,
-        num_agents=8,
-        k_owners=2,
-        agent_regime="acquisition",
-        lambda_scale=2.5,
-        audit_rate=0.2,
-        dynamic_mode=False,
-        seed=42,
+    print_comparison_table(
+        trackers_mixed,
+        "Mode 1 (Static): Mixed Regime (N=12, k=5, 4 Defl / 4 Acq / 4 Neut, Conjunctive)",
     )
-    print_comparison_table(trackers_acquire, "Mode 1 (Static): Acquisition Regime (50% Acquirers, Conjunctive)")
