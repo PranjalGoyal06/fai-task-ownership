@@ -34,7 +34,9 @@ def figure(directory):
         axis.set_xlabel(title)
         axis.spines[["top", "right"]].set_visible(False)
     axes[1].legend(loc="upper center", bbox_to_anchor=(.22, -.2), ncol=2, frameon=False, fontsize=8)
-    fig.savefig(directory / "acquisition.svg", metadata={"Date": None})
+    path = directory / "acquisition.svg"
+    fig.savefig(path, metadata={"Date": None})
+    path.write_text("\n".join(line.rstrip() for line in path.read_text().splitlines()) + "\n")
     plt.close(fig)
 
 
