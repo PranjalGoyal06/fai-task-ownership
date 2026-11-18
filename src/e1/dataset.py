@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pyarrow.parquet as parquet
 
@@ -50,17 +51,34 @@ def merge_dates(rows, directory):
     return dates
 
 
-def prepare(directory):
+def base_times(repository, rows):
+    refs = sorted({row["base_commit"] for row in rows})
+    git = ["git", "--git-dir=" + str(repository)]
+    available = subprocess.check_output(git + ["cat-file", "--batch-check"],
+                                        input="\n".join(refs) + "\n", text=True)
+    missing = [line.split()[0] for line in available.splitlines() if line.endswith(" missing")]
+    if missing:
+        subprocess.run(git + ["fetch", "--no-tags", "origin", *missing], check=True)
+    history = subprocess.check_output(git + ["log", "--no-walk", "--format=%H %ct", *refs], text=True)
+    return {ref: datetime.fromtimestamp(int(sec), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            for ref, sec in map(str.split, history.splitlines())}
+
+
+def prepare(directory, repository):
     corpus = directory / "test.parquet"
     if hashlib.sha256(corpus.read_bytes()).hexdigest() != DIGEST:
         raise ValueError("Unexpected corpus checksum")
     cols = ["repo", "instance_id", "created_at", "base_commit", "problem_statement", "patch"]
     rows = parquet.read_table(corpus, columns=cols, filters=[("repo", "=", "django/django")]).to_pylist()
     dates = merge_dates(rows, directory)
+    times = base_times(repository, rows)
+    for row in rows:
+        row["as_of"] = max(row["created_at"], times[row["base_commit"]])
     inputs, labels, excluded = [], {}, {}
-    for row in sorted(rows, key=lambda r: (r["created_at"], r["instance_id"])):
+    seen = set()
+    for row in sorted(rows, key=lambda r: (r["as_of"], r["instance_id"])):
         key = row["instance_id"]
-        opened = row["created_at"]
+        opened = row["as_of"]
         merged = dates[key.split("-")[-1]]
         partition = "train" if opened < TRAIN_END else "validation" if opened < VALID_END else "test"
         deadline = {"train": TRAIN_END, "validation": VALID_END, "test": "9999"}[partition]
@@ -68,7 +86,15 @@ def prepare(directory):
         if not target or not merged or merged >= deadline:
             excluded[key] = "no production Python" if not target else "unavailable fix by cutoff"
             continue
-        inputs.append(dict(id=key, opened=opened, split=partition,
+        if merged <= opened:
+            excluded[key] = "fix already available at replay timestamp"
+            continue
+        report = " ".join(row["problem_statement"].split())
+        if report in seen:
+            excluded[key] = "duplicate issue text"
+            continue
+        seen.add(report)
+        inputs.append(dict(id=key, opened=opened, created=row["created_at"], split=partition,
                            base=row["base_commit"], text=row["problem_statement"]))
         labels[key] = dict(owners=target, merged=merged)
     dump(directory / "issues.json", inputs)
@@ -79,4 +105,6 @@ def prepare(directory):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("directory", type=Path)
-    prepare(parser.parse_args().directory)
+    parser.add_argument("repository", type=Path)
+    args = parser.parse_args()
+    prepare(args.directory, args.repository)
