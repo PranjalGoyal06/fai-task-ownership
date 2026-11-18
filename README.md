@@ -95,3 +95,7 @@ python demo_simulation.py
 
 ### Default Benchmark Parameters & Reproducibility
 `demo_simulation.py` runs deterministically with `seed=42`, `num_rounds=100`, `num_agents=8`, `k_owners=2`, `lambda_scale=2.5`, `audit_rate=0.2`, `staleness_rho=0.3`, and `Rule=CONJUNCTIVE`. Both **Mode 1 (`dynamic_mode=False`, static types)** and **Mode 2 (`dynamic_mode=True`, workload fatigue & credit EMA)** are supported via `run_experiment(...)`.
+
+## Historical issue experiment
+
+The [grounded replay report](reports/e1/REPORT.md) gives the results, uncertainty and limitations. The [reproduction guide](reports/e1/REPRODUCE.md) covers setup, verification and the complete run.

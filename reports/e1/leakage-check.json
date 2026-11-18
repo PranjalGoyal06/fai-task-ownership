@@ -1,0 +1,1 @@
+{"all_baseline_assignments_equal": true, "base": "f1905db6c0004a2b6c8b69c55a1f5f9da58ce2eb", "checked_test_issues": 234, "issue": "django__django-15248", "original": [0, 2, 3], "predictions_equal": true, "replacement": [5], "snapshots_equal": true, "strategic_reports_and_assignments_equal": true}
