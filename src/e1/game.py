@@ -3,10 +3,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from src.e1.dataset import MODULES
+
 # Action zero reports the local estimate. Remaining actions use a 0.05 grid.
 GRID = np.linspace(0, 1, 21)
 ACTIONS = len(GRID) + 1
-BITS = 1 << np.arange(9)
+BITS = 1 << np.arange(len(MODULES))
 
 
 def select(probabilities, reward):

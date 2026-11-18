@@ -2,6 +2,7 @@
 import argparse
 import ast
 import json
+import importlib.util
 import random
 import warnings
 from pathlib import Path
@@ -20,8 +21,14 @@ def verify(source, ref, path, line, claim):
     for node in ast.walk(tree):
         if getattr(node, "lineno", None) != line:
             continue
-        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module == claim:
-            return "confirmed"
+        if isinstance(node, ast.ImportFrom):
+            package = path.rpartition("/")[0].replace("/", ".")
+            try:
+                absolute = importlib.util.resolve_name("." * node.level + (node.module or ""), package)
+            except ImportError:
+                return "unverifiable"
+            if claim == absolute or any(claim == f"{absolute}.{alias.name}" for alias in node.names):
+                return "confirmed"
         if isinstance(node, ast.Import) and any(alias.name == claim for alias in node.names):
             return "confirmed"
     return "contradicted"
@@ -38,7 +45,7 @@ def pilot(directory, repository):
             if not record["edges"]:
                 rows.append(dict(issue=issue["id"], status="unverifiable"))
                 continue
-            i, j, path, line, claimed = sample.choice(record["edges"])
+            i, j, path, line, claimed, *_ = sample.choice(record["edges"])
             for target in [claimed, claimed + ".missing_pilot_symbol"]:
                 status = verify(source, issue["base"], path, line, target)
                 rows.append(dict(issue=issue["id"], base=issue["base"], path=path, line=line,

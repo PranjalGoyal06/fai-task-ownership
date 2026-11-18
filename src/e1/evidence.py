@@ -2,6 +2,8 @@
 import argparse
 import ast
 import functools
+import hashlib
+import importlib.util
 import json
 import re
 import subprocess
@@ -58,9 +60,10 @@ class Snapshot:
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 names[node.name] = node.lineno
             if isinstance(node, ast.Import):
-                imports.extend((a.name, node.lineno) for a in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-                imports.append((node.module, node.lineno))
+                imports.extend((a.name, None, node.lineno) for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                parent = "." * node.level + (node.module or "")
+                imports.extend((parent, alias.name, node.lineno) for alias in node.names)
         return terms, names, imports, 0
 
     def evidence(self, issue):
@@ -70,8 +73,10 @@ class Snapshot:
         citations, edges = {}, {}
         failures = 0
         tree = subprocess.check_output(self.git + ["ls-tree", "-r", ref, "django"]).decode()
-        for line in tree.splitlines():
-            meta, path = line.split("\t", 1)
+        files = [line.split("\t", 1) for line in tree.splitlines()]
+        packages = {path[:-3].removesuffix("/__init__").replace("/", "."): module(path)
+                    for _, path in files if module(path) is not None}
+        for meta, path in files:
             i = module(path)
             if i is None:
                 continue
@@ -88,10 +93,17 @@ class Snapshot:
             f[3] = float(prefix != "other" and prefix.replace("/", ".") in text.lower())
             if path_hit or hits:
                 citations.setdefault(i, []).append([path, hits[:3], [names[n] for n in hits[:3]]])
-            for target, lineno in imports:
-                j = module(target.replace(".", "/") + "/__init__.py")
+            package = path.rpartition("/")[0].replace("/", ".")
+            for parent, name, lineno in imports:
+                try:
+                    absolute = importlib.util.resolve_name(parent, package)
+                except ImportError:
+                    continue
+                child = f"{absolute}.{name}"
+                target = child if name and child in packages else absolute
+                j = packages.get(target)
                 if j is not None and i != j:
-                    edges.setdefault((i, j), [path, lineno, target])
+                    edges.setdefault((i, j), [path, lineno, target, parent, name])
         return dict(id=issue["id"], base=ref, features=fields, citations=citations,
                     edges=[[i, j, *v] for (i, j), v in sorted(edges.items())],
                     syntax_failures=failures)
@@ -110,8 +122,11 @@ def extract(directory, repository):
         dump(directory / "descriptions.json", dict(base=cutoff, docs=source.descriptions(cutoff)))
         for r in issues:
             path = cache / (r["id"] + ".json")
-            if not path.exists():
-                dump(path, source.evidence(r))
+            signature = hashlib.sha256((Path(__file__).read_text() + repr(MODULES) +
+                                        r["base"] + r["text"]).encode()).hexdigest()
+            if path.exists() and json.loads(path.read_text()).get("signature") == signature:
+                continue
+            dump(path, dict(source.evidence(r), signature=signature))
     finally:
         source.close()
 
