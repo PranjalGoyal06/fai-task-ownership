@@ -20,7 +20,9 @@ from src.simulation_runner import (
     PARAMETER_METADATA,
     SimulationConfig,
     SimulationResults,
+    SimulationCancelled,
     run_full_simulation,
+    run_parameter_grid_search,
     run_parameter_sweep,
 )
 from src.types import CreditRule, ResolutionRule
@@ -1101,7 +1103,10 @@ def render_topology_tab(results: SimulationResults):
 def render_sweep_tab(base_config: SimulationConfig):
     """Tab 5: Sensitivity Parameter Sweep Tool."""
     st.subheader("🎛️ Sensitivity Sweep Analysis (Research Experimentation)")
-    st.caption("Explore how assignment efficiency and regret scale as a single parameter is swept continuously.")
+    st.caption(
+        "Explore average assignment efficiency and regret across repeated runs as a single "
+        "parameter is swept."
+    )
 
     sweep_options = {
         "score_scale": ("Brier Score Scale (λ)", [0.0, 1.0, 2.0, 3.0, 5.0, 7.5, 10.0]),
@@ -1129,6 +1134,14 @@ def render_sweep_tab(base_config: SimulationConfig):
             sweep_vals = default_vals
 
         sweep_rounds = st.slider("Rounds per Sweep Step", 20, 100, 50, 10)
+        sweep_replicates = st.number_input(
+            "Independent Runs per Value",
+            min_value=1,
+            max_value=100,
+            value=5,
+            step=1,
+            help="Average each parameter value across independently seeded runs.",
+        )
         start_sweep = st.button("🚀 Run Sensitivity Sweep", type="primary")
 
     with col2:
@@ -1150,9 +1163,14 @@ def render_sweep_tab(base_config: SimulationConfig):
                 sweep_vals,
                 cfg_sweep,
                 progress_callback=sweep_cb,
+                num_replicates=int(sweep_replicates),
             )
 
             status_text.success("Sweep completed!")
+            st.caption(
+                f"Each value is averaged over {int(sweep_replicates)} independent run(s). "
+                "Std columns show between-run variability."
+            )
             st.dataframe(df_sweep, use_container_width=True)
 
             # Plot sweep results
@@ -1167,6 +1185,11 @@ def render_sweep_tab(base_config: SimulationConfig):
                     y=df_sweep["Mechanism Regret"],
                     name="Mechanism Regret",
                     line=dict(color="#2563EB", width=3),
+                    error_y=dict(
+                        type="data",
+                        array=df_sweep["Mechanism Regret Std"],
+                        visible=True,
+                    ),
                 ),
                 row=1,
                 col=1,
@@ -1187,6 +1210,11 @@ def render_sweep_tab(base_config: SimulationConfig):
                     y=df_sweep["Mechanism Welfare"],
                     name="Mechanism Gross Welfare",
                     line=dict(color="#2563EB", width=3),
+                    error_y=dict(
+                        type="data",
+                        array=df_sweep["Mechanism Welfare Std"],
+                        visible=True,
+                    ),
                 ),
                 row=1,
                 col=2,
@@ -1205,6 +1233,181 @@ def render_sweep_tab(base_config: SimulationConfig):
             st.plotly_chart(fig_sw, use_container_width=True)
         else:
             st.info("Configure the sweep parameters on the left and click 'Run Sensitivity Sweep' to analyze response curves.")
+
+    st.divider()
+    st.subheader("🧮 Multi-Parameter Grid Search")
+    st.caption(
+        "Select any number of numeric parameters to vary. All unselected parameters stay fixed "
+        "at their current sidebar values."
+    )
+
+    grid_options = {
+        "deflector_ratio": ("Deflector Ratio (ϕ_defl)", False),
+        "acquirer_ratio": ("Acquirer Ratio (ϕ_acq)", False),
+        "score_scale": ("Brier Score Scale (λ)", False),
+        "audit_rate": ("Audit Rate (α)", False),
+        "audit_penalty": ("Audit Penalty (F)", False),
+        "b1_staleness_rho": ("B1 Description Staleness (ρ)", False),
+        "calibration_kappa": ("Calibration Exponent (κ)", False),
+        "missing_evidence_prob": ("Missing Evidence Rate (γ)", False),
+        "beta_load": ("Fatigue Sensitivity (β_load)", False),
+        "load_decay": ("Workload Decay (γ_load)", False),
+        "coalition_size_k": ("Coalition Size (k)", True),
+    }
+    selected_grid_params = st.multiselect(
+        "Parameters to vary in the grid",
+        list(grid_options),
+        default=["score_scale", "audit_rate"],
+        format_func=lambda key: grid_options[key][0],
+    )
+
+    grid_spec: dict[str, list[float | int]] = {}
+    if selected_grid_params:
+        grid_columns = st.columns(2)
+        for index, parameter_name in enumerate(selected_grid_params):
+            label, is_integer = grid_options[parameter_name]
+            current_value = getattr(base_config, parameter_name)
+            with grid_columns[index % 2]:
+                st.markdown(f"**{label}**")
+                input_columns = st.columns(3)
+                with input_columns[0]:
+                    grid_start = st.number_input(
+                        "Start",
+                        value=float(current_value),
+                        step=1.0 if is_integer else 0.1,
+                        key=f"grid_start_{parameter_name}",
+                    )
+                with input_columns[1]:
+                    grid_stop = st.number_input(
+                        "Stop",
+                        value=float(current_value) + (2.0 if is_integer else 0.5),
+                        step=1.0 if is_integer else 0.1,
+                        key=f"grid_stop_{parameter_name}",
+                    )
+                with input_columns[2]:
+                    grid_step = st.number_input(
+                        "Step",
+                        min_value=0.0001,
+                        value=1.0 if is_integer else 0.1,
+                        step=1.0 if is_integer else 0.1,
+                        key=f"grid_step_{parameter_name}",
+                    )
+            if grid_step <= 0 or grid_stop < grid_start:
+                st.error(f"{label}: stop must be at least start and step must be positive.")
+                continue
+            values = np.arange(grid_start, grid_stop + grid_step * 0.5, grid_step)
+            if len(values) > 100:
+                st.error(f"{label}: choose a range with at most 100 values.")
+                continue
+            if is_integer:
+                grid_spec[parameter_name] = [int(round(value)) for value in values]
+            else:
+                grid_spec[parameter_name] = [round(float(value), 10) for value in values]
+
+        grid_replicates = st.number_input(
+            "Independent Runs per Grid Point",
+            min_value=1,
+            max_value=100,
+            value=3,
+            step=1,
+            help="Averages each parameter combination across independently seeded runs.",
+        )
+        grid_size = int(np.prod([len(values) for values in grid_spec.values()])) if grid_spec else 0
+        st.caption(f"Grid size: {grid_size} combination(s) × {int(grid_replicates)} run(s).")
+        grid_run_column, grid_stop_column = st.columns(2)
+        with grid_run_column:
+            run_grid = st.button("🚀 Run Multi-Parameter Grid Search", type="primary")
+        with grid_stop_column:
+            stop_grid = st.button("⏹ Stop Grid Search")
+        if "grid_cancel_requested" not in st.session_state:
+            st.session_state.grid_cancel_requested = False
+        if stop_grid:
+            st.session_state.grid_cancel_requested = True
+            st.warning("Grid search cancellation requested.")
+
+        if run_grid:
+            if grid_size == 0:
+                st.error("Provide a valid range for every selected parameter.")
+            else:
+                st.session_state.grid_cancel_requested = False
+                grid_progress = st.progress(0.0)
+                grid_status = st.empty()
+
+                def grid_cb(frac: float, msg: str):
+                    grid_progress.progress(frac)
+                    grid_status.text(msg)
+
+                try:
+                    grid_results = run_parameter_grid_search(
+                        grid_spec,
+                        base_config,
+                        progress_callback=grid_cb,
+                        num_replicates=int(grid_replicates),
+                        cancel_check=lambda: st.session_state.grid_cancel_requested,
+                    )
+                except SimulationCancelled:
+                    grid_status.warning("Grid search stopped.")
+                else:
+                    grid_status.success("Grid search completed!")
+                    st.caption(
+                        "Means are reported for each combination; columns ending in 'Std' show "
+                        "between-run variability."
+                    )
+                    st.dataframe(grid_results, use_container_width=True)
+
+                    st.markdown("#### Research-question metrics")
+                    st.caption(
+                        "RQ1: B2 regret decomposition · RQ2: recovery and incentive cost · "
+                        "RQ3: coalition coverage and padding."
+                    )
+                    research_columns = [
+                        *selected_grid_params,
+                        "B2 Regret",
+                        "B2 Miss Loss",
+                        "B2 Excess Cost",
+                        "Mechanism Regret",
+                        "Regret Recovered",
+                        "Regret Recovery Fraction",
+                        "Incentive Overhead",
+                        "Mean Absolute Shading M",
+                        "Mechanism ECE",
+                        "Tampering Rate",
+                        "B2 Coalition Coverage",
+                        "B2 Coalition Padding",
+                        "Mechanism Coalition Coverage",
+                        "Mechanism Coalition Padding",
+                        "Mechanism Net Welfare",
+                    ]
+                    st.dataframe(
+                        grid_results[[column for column in research_columns if column in grid_results]],
+                        use_container_width=True,
+                    )
+
+                    if len(selected_grid_params) == 1:
+                        parameter_name = selected_grid_params[0]
+                        grid_plot = px.line(
+                            grid_results,
+                            x=parameter_name,
+                            y=["Mechanism Net Welfare", "Mechanism Regret", "Regret Recovery Fraction"],
+                            markers=True,
+                            title=f"Research metrics across {grid_options[parameter_name][0]}",
+                        )
+                    else:
+                        grid_plot = px.scatter(
+                            grid_results,
+                            x=selected_grid_params[0],
+                            y=selected_grid_params[1],
+                            color="Mechanism Net Welfare",
+                            hover_data=[
+                                "Mechanism Regret",
+                                "Regret Recovery Fraction",
+                                "Mechanism Coalition Coverage",
+                            ],
+                            title="Grid combinations colored by Mechanism Net Welfare",
+                        )
+                    st.plotly_chart(grid_plot, use_container_width=True)
+    else:
+        st.info("Select one or more parameters to configure a multi-parameter grid.")
 
 
 def render_theory_tab():
