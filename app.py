@@ -26,6 +26,13 @@ from src.simulation_runner import (
     run_parameter_sweep,
 )
 from src.types import CreditRule, ResolutionRule
+from demo_simulation import (
+    COMPARISON_CARDS,
+    EXPERIMENT_CARDS,
+    get_interpretation_metrics,
+    run_comparison_card,
+    run_experiment_card,
+)
 
 # -----------------------------------------------------------------------------
 # Streamlit Page Configuration
@@ -1461,6 +1468,179 @@ def render_theory_tab():
     )
 
 
+def render_experiment_cards_tab(base_config: SimulationConfig):
+    """Tab 7: Small reproducible scenarios and one-parameter comparisons."""
+    st.subheader("🧪 Interpretable Experiment Cards")
+    st.caption(
+        "Each card runs only when clicked. The fixed seed makes repeated runs deterministic; "
+        "expand a result to inspect the exact parameters used."
+    )
+
+    if "experiment_card_results" not in st.session_state:
+        st.session_state.experiment_card_results = {}
+    if "comparison_card_results" not in st.session_state:
+        st.session_state.comparison_card_results = {}
+
+    st.markdown("### Scenario cards")
+    st.markdown(
+        "These scenarios change one research condition at a time relative to the current "
+        "sidebar configuration."
+    )
+    run_all_scenarios = st.container()
+    with run_all_scenarios:
+        if st.button(
+            "▶▶ Run all scenario cards",
+            key="run_all_scenarios",
+            use_container_width=True,
+        ):
+            progress = st.progress(0.0)
+            for index, card in enumerate(EXPERIMENT_CARDS, start=1):
+                config, results = run_experiment_card(card, base_config)
+                st.session_state.experiment_card_results[card.key] = (config, results)
+                progress.progress(index / len(EXPERIMENT_CARDS))
+            progress.empty()
+            st.success(f"Completed {len(EXPERIMENT_CARDS)} scenario cards.")
+
+    scenario_columns = st.columns(2)
+    for index, card in enumerate(EXPERIMENT_CARDS):
+        with scenario_columns[index % 2]:
+            with st.container(border=True):
+                st.markdown(f"#### {card.title}")
+                st.write(card.explanation)
+                st.caption(
+                    "Overrides: "
+                    + ", ".join(f"`{key}={value}`" for key, value in card.overrides.items())
+                )
+                if st.button(
+                    f"▶ Run {card.title}",
+                    key=f"run_scenario_{card.key}",
+                    use_container_width=True,
+                ):
+                    with st.spinner(f"Running {card.title}..."):
+                        config, results = run_experiment_card(card, base_config)
+                    st.session_state.experiment_card_results[card.key] = (config, results)
+
+                if card.key in st.session_state.experiment_card_results:
+                    config, results = st.session_state.experiment_card_results[card.key]
+                    interpretation = get_interpretation_metrics(results)
+                    summary = results.summary_df[
+                        results.summary_df["System"].isin(
+                            ["Oracle (B4)", "Polling Router (B2)", "Mechanism M"]
+                        )
+                    ][
+                        [
+                            "System",
+                            "Welfare (Gross)",
+                            "Regret",
+                            "Resolution Rate",
+                            "Incentive Overhead",
+                        ]
+                    ]
+                    st.dataframe(summary, hide_index=True, use_container_width=True)
+                    metric_columns = st.columns(4)
+                    metric_columns[0].metric(
+                        "Report shading",
+                        f"{interpretation['Mean Absolute Shading M']:.3f}",
+                    )
+                    metric_columns[1].metric(
+                        "Tampering rate",
+                        f"{interpretation['Tampering Rate']:.3f}",
+                    )
+                    metric_columns[2].metric(
+                        "Coalition coverage",
+                        f"{interpretation['Mechanism Coalition Coverage']:.3f}",
+                    )
+                    metric_columns[3].metric(
+                        "Coalition padding",
+                        f"{interpretation['Mechanism Coalition Padding']:.3f}",
+                    )
+                    with st.expander("Parameters and interpretation"):
+                        parameter_values = {
+                            key: value.value if isinstance(value, (CreditRule, ResolutionRule)) else value
+                            for key, value in config.__dict__.items()
+                        }
+                        st.json(parameter_values)
+                        st.info(
+                            "Compare Mechanism M with B2 for the effect of incentives, and "
+                            "with B4 for the remaining gap to the oracle."
+                        )
+
+    st.markdown("### One-parameter comparison cards")
+    st.markdown(
+        "Each card runs 3–5 values of one parameter while holding all other sidebar values fixed."
+    )
+    if st.button(
+        "📈📈 Run all comparison cards",
+        key="run_all_comparisons",
+        use_container_width=True,
+    ):
+        progress = st.progress(0.0)
+        for index, card in enumerate(COMPARISON_CARDS, start=1):
+            comparison = run_comparison_card(card, base_config)
+            st.session_state.comparison_card_results[card.key] = comparison
+            progress.progress(index / len(COMPARISON_CARDS))
+        progress.empty()
+        st.success(f"Completed {len(COMPARISON_CARDS)} comparison cards.")
+
+    comparison_columns = st.columns(2)
+    for index, card in enumerate(COMPARISON_CARDS):
+        with comparison_columns[index % 2]:
+            with st.container(border=True):
+                st.markdown(f"#### {card.title}")
+                st.write(card.explanation)
+                st.caption(
+                    f"Parameter: `{card.parameter}` | Values: "
+                    + ", ".join(str(value) for value in card.values)
+                )
+                if card.base_overrides:
+                    st.caption(
+                        "Fixed card settings: "
+                        + ", ".join(
+                            f"`{key}={value}`" for key, value in card.base_overrides.items()
+                        )
+                    )
+                if st.button(
+                    f"📈 Compare {card.title}",
+                    key=f"run_comparison_{card.key}",
+                    use_container_width=True,
+                ):
+                    with st.spinner(f"Running {card.title}..."):
+                        comparison = run_comparison_card(card, base_config)
+                    st.session_state.comparison_card_results[card.key] = comparison
+
+                if card.key in st.session_state.comparison_card_results:
+                    comparison = st.session_state.comparison_card_results[card.key]
+                    display_columns = [
+                        card.parameter,
+                        "Mechanism Welfare",
+                        "Mechanism Regret",
+                        "Mechanism Resolution Rate",
+                        "Mechanism Incentive Overhead",
+                        "B2 Polling Regret",
+                        "Mechanism Mean Absolute Shading",
+                        "Mechanism Tampering Rate",
+                        "Mechanism Coalition Coverage",
+                        "Mechanism Coalition Padding",
+                    ]
+                    st.dataframe(
+                        comparison[display_columns],
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                    chart = px.line(
+                        comparison,
+                        x=card.parameter,
+                        y=[
+                            "Mechanism Welfare",
+                            "Mechanism Regret",
+                            "Mechanism Resolution Rate",
+                        ],
+                        markers=True,
+                        title=f"Effect of {card.parameter}",
+                    )
+                    st.plotly_chart(chart, use_container_width=True)
+
+
 # -----------------------------------------------------------------------------
 # Main Application Flow
 # -----------------------------------------------------------------------------
@@ -1495,8 +1675,10 @@ def main():
     render_kpi_cards(results)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    # A keyed radio navigation persists the selected page across Streamlit reruns.
+    # This keeps button actions inside a page from returning the user to the first page.
+    page = st.radio(
+        "Application section",
         [
             "📊 Benchmark Results",
             "📈 Convergence & Dynamics",
@@ -1504,26 +1686,27 @@ def main():
             "🕸️ Topology & Task Inspector",
             "🎛️ Sensitivity Sweeps",
             "📖 FAI Theoretical Guide",
-        ]
+            "🧪 Experiment Cards",
+        ],
+        key="active_page",
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
-    with tab1:
+    if page == "📊 Benchmark Results":
         render_benchmark_tab(results)
-
-    with tab2:
+    elif page == "📈 Convergence & Dynamics":
         render_dynamics_tab(results)
-
-    with tab3:
+    elif page == "🔬 Strategic Shading & Audits":
         render_shading_tab(results)
-
-    with tab4:
+    elif page == "🕸️ Topology & Task Inspector":
         render_topology_tab(results)
-
-    with tab5:
+    elif page == "🎛️ Sensitivity Sweeps":
         render_sweep_tab(config)
-
-    with tab6:
+    elif page == "📖 FAI Theoretical Guide":
         render_theory_tab()
+    elif page == "🧪 Experiment Cards":
+        render_experiment_cards_tab(config)
 
 
 if __name__ == "__main__":

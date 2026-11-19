@@ -916,6 +916,7 @@ def run_parameter_sweep(
 
             res = run_full_simulation(cfg_copy)
             summary_by_system = res.summary_df.set_index("System")
+            research = _research_metrics(res)
             replicate_rows.append(
                 {
                     "Mechanism Welfare": summary_by_system.at["Mechanism M", "Welfare (Gross)"],
@@ -932,6 +933,11 @@ def run_parameter_sweep(
                     "Oracle Welfare": summary_by_system.at["Oracle (B4)", "Welfare (Gross)"],
                     "B2 Polling Regret": summary_by_system.at["Polling Router (B2)", "Regret"],
                     "B1 Description Regret": summary_by_system.at["Description (B1)", "Regret"],
+                    "Mechanism Mean Absolute Shading": research["Mean Absolute Shading M"],
+                    "Mechanism Tampering Rate": research["Tampering Rate"],
+                    "Mechanism Coalition Coverage": research["Mechanism Coalition Coverage"],
+                    "Mechanism Coalition Padding": research["Mechanism Coalition Padding"],
+                    "Mechanism ECE": research["Mechanism ECE"],
                 }
             )
             completed += 1

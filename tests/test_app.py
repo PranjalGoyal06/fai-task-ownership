@@ -1,6 +1,12 @@
 """Automated tests for simulation runner and app configuration."""
 
 import pytest
+from demo_simulation import (
+    COMPARISON_CARDS,
+    EXPERIMENT_CARDS,
+    build_experiment_config,
+    run_comparison_card,
+)
 from src.simulation_runner import (
     SimulationConfig,
     SimulationCancelled,
@@ -156,4 +162,24 @@ def test_parameter_grid_search_can_be_cancelled_between_runs():
             num_replicates=1,
             cancel_check=cancel_after_first_run,
         )
+
+
+def test_experiment_cards_use_known_parameters_and_override_base_config():
+    base = SimulationConfig(num_rounds=2, num_agents=6, seed=42)
+    card = next(card for card in EXPERIMENT_CARDS if card.key == "small_population")
+    config = build_experiment_config(base, card.overrides)
+
+    assert config.num_agents == 4
+    assert config.num_rounds == base.num_rounds
+    assert base.num_agents == 6
+
+
+def test_comparison_card_is_reproducible():
+    base = SimulationConfig(num_rounds=2, num_agents=4, seed=42)
+    card = next(card for card in COMPARISON_CARDS if card.parameter == "audit_rate")
+
+    first = run_comparison_card(card, base)
+    second = run_comparison_card(card, base)
+
+    assert first.equals(second)
 
