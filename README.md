@@ -65,6 +65,35 @@ pytest tests -v
 
 ---
 
+## Task ownership lab
+
+Run the unified app from the repository root. The historical page ships with a frozen Django preset and works offline. The sidebar also opens the existing synthetic simulator.
+
+```sh
+python -m streamlit run lab.py
+```
+
+**Try the historical replay.** Start with six of nine owners privately rewarded for assignment, scoring strength eight and seed 331. Compare polling with the selected policy across all fixes, then select **Multi-module**. Choose a fix to inspect its lexical evidence, submitted reports, assignments, settlement and pre-fix import graph. The module map is fixed for this benchmark. The sidebar count controls how many owners have a private incentive on each issue.
+
+The lab keeps the ownership probabilities fixed and refits numerical reporting policies on the earlier validation period each time settings change. Press **Run replay** to apply edits. Both policies face the same later fixes and private type draws. The pooled benchmark for each reward uses pre-fix evidence. Changed files serve as the ownership proxy. Trying settings on the held-out issues is exploratory.
+
+**Save and replay.** Under **Reproduce this run**, download the settings as JSON or the complete ZIP with both policies’ issue and agent tables. Restore the JSON in the sidebar or run it from the command line. The recipe records the frozen input digest. Use the same checkout and the [recorded Python environment](reports/e1/environment.txt) for byte comparisons.
+
+```sh
+python -m src.lab.replay --recipe recipe.json --output replay.zip
+```
+
+**How the code fits together.** The Streamlit page calls the headless runner in [src/lab](src/lab). The [reporting game](src/e1/game.py) fits the strategy and computes reports, audits and assignment. The [E1 replay](src/e1/replay.py) settles the assignment against the patch. [Mechanisms](src/mechanisms.py) supplies centered scoring and credit allocation. The synthetic page continues to use its own simulation runner. The lab uses the same historical engine for interactive and command-line runs.
+
+The portable supplement contains validation estimates and graph degrees, pre-fix evidence summaries, and pooled assignments at rewards 5, 8 and 12. It joins the published cohort, predictions and method summaries in manifest order. To regenerate it, follow the [E1 reproduction guide](reports/e1/REPRODUCE.md) through evidence extraction, then run the following commands with the pinned environment. The preparation step refits the original predictors and checks their held-out estimates against the release.
+
+```sh
+python -m src.lab.prepare results/inputs reports/e1 results/replay-inputs.json.gz
+cmp results/replay-inputs.json.gz presets/django/replay-inputs.json.gz
+```
+
+See the [lab progress log](LAB_PROGRESS.md) for verification and the next milestone.
+
 ## Running the Interactive Streamlit UI
 
 Launch the interactive web application to tune all system constants, test benchmarks, inspect module topologies, step through individual task rounds, and run live sensitivity sweeps:

@@ -6,3 +6,20 @@ Branch `feat/task-ownership-lab` starts at E1 revision `0d15b6a`. Its worktree i
 | --- | --- | --- |
 | 2026-11-19T23:48:30+05:30 | Merge remote-tracking branch 'origin/main' into feat/task-ownership-lab | Integrated the simulation and interpretability changes from main at `279cf29`. |
 | 2026-11-19T23:57:33+0530 | feat: add reproducible historical replay runner | Prepared the portable Django inputs. Added policy replay, paired analysis, per-agent traces, recipe export and issue-level parity tests for all 44 E1 conditions. |
+| 2026-11-19T23:58:07+0530 | feat: add historical inspector to the task ownership lab | Integrated the synthetic simulator, reporting controls, comparisons, evidence, import graph, settings restore and local downloads. |
+
+## Review checkpoint
+
+- Start the unified app with `python -m streamlit run lab.py`. Choose **Historical replay** or **Synthetic simulation** in the sidebar.
+- The full suite passed 102 tests. Across all 44 archived conditions, the lab matched the original per-issue assignments, welfare, coverage, padding, loss decomposition, payments, audit and message counts on all 234 held-out issues. Solver status, iteration count and residual also matched.
+- Default polling covered 110 fixes with 792 assignments. Scoring covered 114 with 610 assignments. Across the 27 multi-module fixes, coverage fell from nine to six. These are results of the original fitted Django experiment.
+- Rebuilding the compressed supplement from the local E1 cache produced identical bytes. Downloaded-format settings reproduced identical ZIP bytes in a separate command-line run. The UI tests cover an edited run and settings restoration.
+- A browser check opened both pages and rendered the directed pre-fix graph for the selected module. Local verification used the E1 reproduction environment.
+- No outstanding blocker for this milestone. The preset fixes the nine Django owners and trains on this repository’s history. The lab recomputes strategic policies for each chosen configuration.
+
+## Next steps
+
+1. Review the Django replay and issue inspector against the published result.
+2. Add an editable ownership map and a second curated repository. Regenerate ownership labels, local evidence, graph, training splits and probabilities for each map. Verify that a fresh export can reproduce the frozen Django map.
+3. Add repository suitability checks before arbitrary repository intake. Record issue-to-fix linkage, eligible paths, ambiguous or unmapped patches, chronological split support, source size and import coverage.
+4. Integrate the real E2 artifacts through a paired evidence comparison once available. Coordinate physical moves of shared model code after the E2 merge.
