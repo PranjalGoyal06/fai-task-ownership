@@ -540,7 +540,7 @@ def run_full_simulation(
         obs_noise_sigma=config.obs_noise_sigma,
         missing_evidence_prob=config.missing_evidence_prob,
         signal_sensitivity=config.signal_sensitivity,
-        signal_midpoint=midpoint,
+        signal_midpoint=None if config.use_auto_midpoint else config.signal_midpoint_override,
         seed=seed,
     )
 
