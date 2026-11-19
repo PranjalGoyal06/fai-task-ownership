@@ -20,3 +20,9 @@ Replay historical issues with module-local lexical evidence at the base commit, 
 - 00:17:13 IST, `8d6f713` normalized generated plot whitespace. Regenerated the figure and manifest twice and checked matching digests. The full branch passed whitespace checks before publication.
 - 00:17:30 IST, `e54983a` committed the report, cohort, diagnostics, calibration, frontier, seed checks, per-issue outcomes and figure.
 - 2026-11-19T00:17:47+05:30, `docs: record the verified overnight checkpoint` closed the implementation log. The 06:00 IST check is pending.
+
+## Morning verification
+
+At 06:00:04 IST on 19 November the active session verified clean head `f9d1b66`. All 46 tests passed, all 15 frozen files matched the manifest and a fresh held-out patch perturbation reproduced the saved outcome. Report links and added text passed inspection. No blocker or pending experiment step remains. Local publication only.
+
+- 2026-11-19T06:00:18+05:30, `docs: record morning replay verification` completed the checkpoint.
