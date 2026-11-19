@@ -80,7 +80,9 @@ Features included in the web UI:
 - **📈 Convergence Dynamics**: Multi-round cumulative welfare, running regret trajectories, and dynamic workload fatigue evolution.
 - **🔬 Strategic Shading & Audits**: Live scatter plots showing how ex-post proper scoring ($\lambda$) contracts strategic misreporting cones back toward truthful beliefs, along with audit deterrence metrics.
 - **🕸️ Repository Topology & Round Inspector**: Interactive 2D dependency graph $G$ and round-by-round task inspection with root-cause tracking and assignment comparisons.
-- **🎛️ Sensitivity Sweeps**: Automated parameter sweep tool to plot continuous regret and welfare curves across any parameter range.
+- **🎛️ Sensitivity Sweeps & Grid Search**: Run repeated one-dimensional sweeps or vary multiple numeric parameters simultaneously over user-defined ranges and steps. Results include averages, variability, regret recovery, incentive overhead, report shading, tampering, coalition coverage, and padding for the project research questions.
+- **🧪 Interpretable Experiment Cards**: Run labeled, deterministic stress scenarios on demand (population size, deflection, acquisition, scoring, auditing, penalties, and missing evidence), inspect their parameters, and compare them with B2 and B4.
+- **📈 One-Parameter Comparison Cards**: Run compact 3–5 value comparisons for population size, deflection strength, audit rate, audit penalty, or scoring strength with tables and plots.
 - **📖 FAI Theoretical Guide**: Full reference of mathematical formulas, assumptions, and research questions.
 
 ---

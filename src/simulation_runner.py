@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import product
 from typing import Any, Callable
 import math
 import numpy as np
@@ -15,6 +16,10 @@ from src.evidence import EvidenceEngine
 from src.mechanisms import AssignmentMechanism
 from src.metrics import MetricsEvaluator
 from src.types import CreditRule, MechanismConfig, ResolutionRule, Task
+
+
+class SimulationCancelled(RuntimeError):
+    """Raised when a user requests cancellation between simulation runs."""
 
 
 @dataclass
@@ -540,7 +545,7 @@ def run_full_simulation(
         obs_noise_sigma=config.obs_noise_sigma,
         missing_evidence_prob=config.missing_evidence_prob,
         signal_sensitivity=config.signal_sensitivity,
-        signal_midpoint=midpoint,
+        signal_midpoint=None if config.use_auto_midpoint else config.signal_midpoint_override,
         seed=seed,
     )
 
@@ -885,42 +890,209 @@ def run_parameter_sweep(
     param_values: list[Any],
     base_config: SimulationConfig,
     progress_callback: Callable[[float, str], None] | None = None,
+    num_replicates: int = 1,
 ) -> pd.DataFrame:
-    """Executes a 1D sensitivity parameter sweep over chosen values."""
+    """Executes a 1D sensitivity sweep, averaging independent seeded replicates.
+
+    The same replicate seed is used across parameter values so each curve
+    compares values under the same random draw, while different replicates
+    estimate stochastic variability.
+    """
+    if not param_values:
+        raise ValueError("param_values must contain at least one value")
+    if num_replicates < 1:
+        raise ValueError("num_replicates must be at least 1")
+
     sweep_rows = []
-    total = len(param_values)
+    total = len(param_values) * num_replicates
+    completed = 0
 
     for idx, val in enumerate(param_values):
-        if progress_callback:
-            progress_callback(idx / total, f"Sweeping {param_name} = {val} ({idx + 1}/{total})...")
+        replicate_rows: list[dict[str, Any]] = []
+        for replicate in range(num_replicates):
+            cfg_copy = SimulationConfig(**base_config.__dict__)
+            setattr(cfg_copy, param_name, val)
+            cfg_copy.seed = base_config.seed + replicate
 
-        cfg_copy = SimulationConfig(**base_config.__dict__)
-        setattr(cfg_copy, param_name, val)
+            res = run_full_simulation(cfg_copy)
+            summary_by_system = res.summary_df.set_index("System")
+            research = _research_metrics(res)
+            replicate_rows.append(
+                {
+                    "Mechanism Welfare": summary_by_system.at["Mechanism M", "Welfare (Gross)"],
+                    "Mechanism Regret": summary_by_system.at["Mechanism M", "Regret"],
+                    "Mechanism Net Welfare": summary_by_system.at["Mechanism M", "Net Welfare"],
+                    "Mechanism Incentive Overhead": summary_by_system.at[
+                        "Mechanism M", "Incentive Overhead"
+                    ],
+                    "Mechanism Miss Loss": summary_by_system.at["Mechanism M", "Miss Loss (ΔV)"],
+                    "Mechanism Excess Cost": summary_by_system.at["Mechanism M", "Excess Cost (ΔC)"],
+                    "Mechanism Resolution Rate": summary_by_system.at[
+                        "Mechanism M", "Resolution Rate"
+                    ],
+                    "Oracle Welfare": summary_by_system.at["Oracle (B4)", "Welfare (Gross)"],
+                    "B2 Polling Regret": summary_by_system.at["Polling Router (B2)", "Regret"],
+                    "B1 Description Regret": summary_by_system.at["Description (B1)", "Regret"],
+                    "Mechanism Mean Absolute Shading": research["Mean Absolute Shading M"],
+                    "Mechanism Tampering Rate": research["Tampering Rate"],
+                    "Mechanism Coalition Coverage": research["Mechanism Coalition Coverage"],
+                    "Mechanism Coalition Padding": research["Mechanism Coalition Padding"],
+                    "Mechanism ECE": research["Mechanism ECE"],
+                }
+            )
+            completed += 1
+            if progress_callback:
+                progress_callback(
+                    completed / total,
+                    f"Sweeping {param_name} = {val}; replicate {replicate + 1}/{num_replicates} "
+                    f"({completed}/{total})...",
+                )
 
-        res = run_full_simulation(cfg_copy)
-        m_row = res.summary_df[res.summary_df["System"] == "Mechanism M"].iloc[0]
-        o_row = res.summary_df[res.summary_df["System"] == "Oracle (B4)"].iloc[0]
-        b2_row = res.summary_df[res.summary_df["System"] == "Polling Router (B2)"].iloc[0]
-        b1_row = res.summary_df[res.summary_df["System"] == "Description (B1)"].iloc[0]
-
-        sweep_rows.append(
-            {
-                param_name: val,
-                "Mechanism Welfare": m_row["Welfare (Gross)"],
-                "Mechanism Regret": m_row["Regret"],
-                "Mechanism Net Welfare": m_row["Net Welfare"],
-                "Mechanism Incentive Overhead": m_row["Incentive Overhead"],
-                "Mechanism Miss Loss": m_row["Miss Loss (ΔV)"],
-                "Mechanism Excess Cost": m_row["Excess Cost (ΔC)"],
-                "Mechanism Resolution Rate": m_row["Resolution Rate"],
-                "Oracle Welfare": o_row["Welfare (Gross)"],
-                "B2 Polling Regret": b2_row["Regret"],
-                "B1 Description Regret": b1_row["Regret"],
-            }
-        )
+        sweep_row: dict[str, Any] = {param_name: val, "Runs": num_replicates}
+        for metric_name in replicate_rows[0]:
+            metric_values = [row[metric_name] for row in replicate_rows]
+            sweep_row[metric_name] = float(np.mean(metric_values))
+            sweep_row[f"{metric_name} Std"] = float(np.std(metric_values, ddof=1)) if num_replicates > 1 else 0.0
+        sweep_rows.append(sweep_row)
 
     if progress_callback:
         progress_callback(1.0, f"Sweep for {param_name} complete!")
 
     return pd.DataFrame(sweep_rows)
+
+
+def _coalition_metrics(
+    task_history: list[dict[str, Any]],
+    assignment_key: str,
+) -> tuple[float, float]:
+    """Returns mean required-owner coverage and non-owner padding for assignments."""
+    if not task_history:
+        return 0.0, 0.0
+
+    coverage: list[float] = []
+    padding: list[float] = []
+    for task in task_history:
+        required = set(task["S_star"])
+        assigned = set(task[assignment_key])
+        coverage.append(len(required.intersection(assigned)) / len(required) if required else 0.0)
+        padding.append(float(len(assigned - required)))
+    return float(np.mean(coverage)), float(np.mean(padding))
+
+
+def _research_metrics(results: SimulationResults) -> dict[str, float]:
+    """Extracts metrics aligned with RQ1-RQ3 from one simulation result."""
+    summary = results.summary_df.set_index("System")
+    b2 = summary.loc["Polling Router (B2)"]
+    mechanism = summary.loc["Mechanism M"]
+    reports_m: list[float] = []
+    reports_b2: list[float] = []
+    labels: list[int] = []
+    for task in results.task_history:
+        required = set(task["S_star"])
+        for agent_id in task["pi_true"]:
+            reports_m.append(float(task["reports_M"][agent_id]))
+            reports_b2.append(float(task["reports_B2"][agent_id]))
+            labels.append(int(agent_id in required))
+    b2_coverage, b2_padding = _coalition_metrics(results.task_history, "A_B2")
+    mechanism_coverage, mechanism_padding = _coalition_metrics(
+        results.task_history, "A_Mechanism"
+    )
+    b2_regret = float(b2["Regret"])
+    mechanism_regret = float(mechanism["Regret"])
+
+    return {
+        "B2 Welfare": float(b2["Welfare (Gross)"]),
+        "B2 Regret": b2_regret,
+        "B2 Miss Loss": float(b2["Miss Loss (ΔV)"]),
+        "B2 Excess Cost": float(b2["Excess Cost (ΔC)"]),
+        "B2 Resolution Rate": float(b2["Resolution Rate"]),
+        "Mechanism Welfare": float(mechanism["Welfare (Gross)"]),
+        "Mechanism Regret": mechanism_regret,
+        "Mechanism Miss Loss": float(mechanism["Miss Loss (ΔV)"]),
+        "Mechanism Excess Cost": float(mechanism["Excess Cost (ΔC)"]),
+        "Mechanism Net Welfare": float(mechanism["Net Welfare"]),
+        "Mechanism Efficiency": float(mechanism["Efficiency Ratio (η)"]),
+        "Mechanism Resolution Rate": float(mechanism["Resolution Rate"]),
+        "Incentive Overhead": float(mechanism["Incentive Overhead"]),
+        "Regret Recovered": b2_regret - mechanism_regret,
+        "Regret Recovery Fraction": (
+            (b2_regret - mechanism_regret) / b2_regret if not np.isclose(b2_regret, 0.0) else 0.0
+        ),
+        "Mean Absolute Shading M": float(results.agents_df["Shading M (r_M - π)"].abs().mean()),
+        "Mean Absolute Shading B2": float(results.agents_df["Shading B2 (r_B2 - π)"].abs().mean()),
+        "Mechanism ECE": MetricsEvaluator.compute_ece(reports_m, labels),
+        "B2 ECE": MetricsEvaluator.compute_ece(reports_b2, labels),
+        "Tampering Rate": float(np.mean(results.raw_trackers["Mechanism M"]["tampering_rate"])),
+        "B2 Coalition Coverage": b2_coverage,
+        "B2 Coalition Padding": b2_padding,
+        "Mechanism Coalition Coverage": mechanism_coverage,
+        "Mechanism Coalition Padding": mechanism_padding,
+    }
+
+
+def run_parameter_grid_search(
+    parameter_grid: dict[str, list[Any]],
+    base_config: SimulationConfig,
+    progress_callback: Callable[[float, str], None] | None = None,
+    num_replicates: int = 1,
+    cancel_check: Callable[[], bool] | None = None,
+) -> pd.DataFrame:
+    """Runs every combination in a multi-parameter grid and averages replicates.
+
+    Parameters not present in ``parameter_grid`` remain fixed at ``base_config``.
+    Replicate seeds are shared across grid points to make comparisons less noisy.
+    """
+    if not parameter_grid:
+        raise ValueError("parameter_grid must contain at least one parameter")
+    if num_replicates < 1:
+        raise ValueError("num_replicates must be at least 1")
+
+    known_parameters = set(SimulationConfig.__dataclass_fields__)
+    unknown_parameters = set(parameter_grid) - known_parameters
+    if unknown_parameters:
+        names = ", ".join(sorted(unknown_parameters))
+        raise ValueError(f"Unknown simulation parameter(s): {names}")
+    if any(not values for values in parameter_grid.values()):
+        raise ValueError("Each grid parameter must contain at least one value")
+
+    parameter_names = list(parameter_grid)
+    grid_points = list(product(*(parameter_grid[name] for name in parameter_names)))
+    total_runs = len(grid_points) * num_replicates
+    completed = 0
+    rows: list[dict[str, Any]] = []
+
+    for point in grid_points:
+        point_config = dict(zip(parameter_names, point))
+        replicate_metrics: list[dict[str, float]] = []
+        for replicate in range(num_replicates):
+            if cancel_check and cancel_check():
+                raise SimulationCancelled("Grid search cancelled by user.")
+
+            config_values = dict(base_config.__dict__)
+            config_values.update(point_config)
+            config_values["seed"] = int(config_values["seed"]) + replicate
+            config = SimulationConfig(**config_values)
+            results = run_full_simulation(config)
+            replicate_metrics.append(_research_metrics(results))
+
+            completed += 1
+            if progress_callback:
+                progress_callback(
+                    completed / total_runs,
+                    f"Grid point {completed // num_replicates + (1 if completed % num_replicates else 0)}"
+                    f"/{len(grid_points)}; replicate {replicate + 1}/{num_replicates}...",
+                )
+
+        row: dict[str, Any] = {**point_config, "Runs": num_replicates}
+        for metric_name in replicate_metrics[0]:
+            values = [metrics[metric_name] for metrics in replicate_metrics]
+            row[metric_name] = float(np.mean(values))
+            row[f"{metric_name} Std"] = (
+                float(np.std(values, ddof=1)) if num_replicates > 1 else 0.0
+            )
+        rows.append(row)
+
+    if progress_callback:
+        progress_callback(1.0, f"Grid search complete: {len(grid_points)} point(s).")
+    return pd.DataFrame(rows)
 

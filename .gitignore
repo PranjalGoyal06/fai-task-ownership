@@ -16,5 +16,4 @@ dist/
 
 # Outputs & plots
 *.png
-*.pdf
 results/

@@ -20,10 +20,19 @@ from src.simulation_runner import (
     PARAMETER_METADATA,
     SimulationConfig,
     SimulationResults,
+    SimulationCancelled,
     run_full_simulation,
+    run_parameter_grid_search,
     run_parameter_sweep,
 )
 from src.types import CreditRule, ResolutionRule
+from demo_simulation import (
+    COMPARISON_CARDS,
+    EXPERIMENT_CARDS,
+    get_interpretation_metrics,
+    run_comparison_card,
+    run_experiment_card,
+)
 
 # -----------------------------------------------------------------------------
 # Streamlit Page Configuration
@@ -1101,7 +1110,10 @@ def render_topology_tab(results: SimulationResults):
 def render_sweep_tab(base_config: SimulationConfig):
     """Tab 5: Sensitivity Parameter Sweep Tool."""
     st.subheader("🎛️ Sensitivity Sweep Analysis (Research Experimentation)")
-    st.caption("Explore how assignment efficiency and regret scale as a single parameter is swept continuously.")
+    st.caption(
+        "Explore average assignment efficiency and regret across repeated runs as a single "
+        "parameter is swept."
+    )
 
     sweep_options = {
         "score_scale": ("Brier Score Scale (λ)", [0.0, 1.0, 2.0, 3.0, 5.0, 7.5, 10.0]),
@@ -1129,6 +1141,14 @@ def render_sweep_tab(base_config: SimulationConfig):
             sweep_vals = default_vals
 
         sweep_rounds = st.slider("Rounds per Sweep Step", 20, 100, 50, 10)
+        sweep_replicates = st.number_input(
+            "Independent Runs per Value",
+            min_value=1,
+            max_value=100,
+            value=5,
+            step=1,
+            help="Average each parameter value across independently seeded runs.",
+        )
         start_sweep = st.button("🚀 Run Sensitivity Sweep", type="primary")
 
     with col2:
@@ -1150,9 +1170,14 @@ def render_sweep_tab(base_config: SimulationConfig):
                 sweep_vals,
                 cfg_sweep,
                 progress_callback=sweep_cb,
+                num_replicates=int(sweep_replicates),
             )
 
             status_text.success("Sweep completed!")
+            st.caption(
+                f"Each value is averaged over {int(sweep_replicates)} independent run(s). "
+                "Std columns show between-run variability."
+            )
             st.dataframe(df_sweep, use_container_width=True)
 
             # Plot sweep results
@@ -1167,6 +1192,11 @@ def render_sweep_tab(base_config: SimulationConfig):
                     y=df_sweep["Mechanism Regret"],
                     name="Mechanism Regret",
                     line=dict(color="#2563EB", width=3),
+                    error_y=dict(
+                        type="data",
+                        array=df_sweep["Mechanism Regret Std"],
+                        visible=True,
+                    ),
                 ),
                 row=1,
                 col=1,
@@ -1187,6 +1217,11 @@ def render_sweep_tab(base_config: SimulationConfig):
                     y=df_sweep["Mechanism Welfare"],
                     name="Mechanism Gross Welfare",
                     line=dict(color="#2563EB", width=3),
+                    error_y=dict(
+                        type="data",
+                        array=df_sweep["Mechanism Welfare Std"],
+                        visible=True,
+                    ),
                 ),
                 row=1,
                 col=2,
@@ -1205,6 +1240,181 @@ def render_sweep_tab(base_config: SimulationConfig):
             st.plotly_chart(fig_sw, use_container_width=True)
         else:
             st.info("Configure the sweep parameters on the left and click 'Run Sensitivity Sweep' to analyze response curves.")
+
+    st.divider()
+    st.subheader("🧮 Multi-Parameter Grid Search")
+    st.caption(
+        "Select any number of numeric parameters to vary. All unselected parameters stay fixed "
+        "at their current sidebar values."
+    )
+
+    grid_options = {
+        "deflector_ratio": ("Deflector Ratio (ϕ_defl)", False),
+        "acquirer_ratio": ("Acquirer Ratio (ϕ_acq)", False),
+        "score_scale": ("Brier Score Scale (λ)", False),
+        "audit_rate": ("Audit Rate (α)", False),
+        "audit_penalty": ("Audit Penalty (F)", False),
+        "b1_staleness_rho": ("B1 Description Staleness (ρ)", False),
+        "calibration_kappa": ("Calibration Exponent (κ)", False),
+        "missing_evidence_prob": ("Missing Evidence Rate (γ)", False),
+        "beta_load": ("Fatigue Sensitivity (β_load)", False),
+        "load_decay": ("Workload Decay (γ_load)", False),
+        "coalition_size_k": ("Coalition Size (k)", True),
+    }
+    selected_grid_params = st.multiselect(
+        "Parameters to vary in the grid",
+        list(grid_options),
+        default=["score_scale", "audit_rate"],
+        format_func=lambda key: grid_options[key][0],
+    )
+
+    grid_spec: dict[str, list[float | int]] = {}
+    if selected_grid_params:
+        grid_columns = st.columns(2)
+        for index, parameter_name in enumerate(selected_grid_params):
+            label, is_integer = grid_options[parameter_name]
+            current_value = getattr(base_config, parameter_name)
+            with grid_columns[index % 2]:
+                st.markdown(f"**{label}**")
+                input_columns = st.columns(3)
+                with input_columns[0]:
+                    grid_start = st.number_input(
+                        "Start",
+                        value=float(current_value),
+                        step=1.0 if is_integer else 0.1,
+                        key=f"grid_start_{parameter_name}",
+                    )
+                with input_columns[1]:
+                    grid_stop = st.number_input(
+                        "Stop",
+                        value=float(current_value) + (2.0 if is_integer else 0.5),
+                        step=1.0 if is_integer else 0.1,
+                        key=f"grid_stop_{parameter_name}",
+                    )
+                with input_columns[2]:
+                    grid_step = st.number_input(
+                        "Step",
+                        min_value=0.0001,
+                        value=1.0 if is_integer else 0.1,
+                        step=1.0 if is_integer else 0.1,
+                        key=f"grid_step_{parameter_name}",
+                    )
+            if grid_step <= 0 or grid_stop < grid_start:
+                st.error(f"{label}: stop must be at least start and step must be positive.")
+                continue
+            values = np.arange(grid_start, grid_stop + grid_step * 0.5, grid_step)
+            if len(values) > 100:
+                st.error(f"{label}: choose a range with at most 100 values.")
+                continue
+            if is_integer:
+                grid_spec[parameter_name] = [int(round(value)) for value in values]
+            else:
+                grid_spec[parameter_name] = [round(float(value), 10) for value in values]
+
+        grid_replicates = st.number_input(
+            "Independent Runs per Grid Point",
+            min_value=1,
+            max_value=100,
+            value=3,
+            step=1,
+            help="Averages each parameter combination across independently seeded runs.",
+        )
+        grid_size = int(np.prod([len(values) for values in grid_spec.values()])) if grid_spec else 0
+        st.caption(f"Grid size: {grid_size} combination(s) × {int(grid_replicates)} run(s).")
+        grid_run_column, grid_stop_column = st.columns(2)
+        with grid_run_column:
+            run_grid = st.button("🚀 Run Multi-Parameter Grid Search", type="primary")
+        with grid_stop_column:
+            stop_grid = st.button("⏹ Stop Grid Search")
+        if "grid_cancel_requested" not in st.session_state:
+            st.session_state.grid_cancel_requested = False
+        if stop_grid:
+            st.session_state.grid_cancel_requested = True
+            st.warning("Grid search cancellation requested.")
+
+        if run_grid:
+            if grid_size == 0:
+                st.error("Provide a valid range for every selected parameter.")
+            else:
+                st.session_state.grid_cancel_requested = False
+                grid_progress = st.progress(0.0)
+                grid_status = st.empty()
+
+                def grid_cb(frac: float, msg: str):
+                    grid_progress.progress(frac)
+                    grid_status.text(msg)
+
+                try:
+                    grid_results = run_parameter_grid_search(
+                        grid_spec,
+                        base_config,
+                        progress_callback=grid_cb,
+                        num_replicates=int(grid_replicates),
+                        cancel_check=lambda: st.session_state.grid_cancel_requested,
+                    )
+                except SimulationCancelled:
+                    grid_status.warning("Grid search stopped.")
+                else:
+                    grid_status.success("Grid search completed!")
+                    st.caption(
+                        "Means are reported for each combination; columns ending in 'Std' show "
+                        "between-run variability."
+                    )
+                    st.dataframe(grid_results, use_container_width=True)
+
+                    st.markdown("#### Research-question metrics")
+                    st.caption(
+                        "RQ1: B2 regret decomposition · RQ2: recovery and incentive cost · "
+                        "RQ3: coalition coverage and padding."
+                    )
+                    research_columns = [
+                        *selected_grid_params,
+                        "B2 Regret",
+                        "B2 Miss Loss",
+                        "B2 Excess Cost",
+                        "Mechanism Regret",
+                        "Regret Recovered",
+                        "Regret Recovery Fraction",
+                        "Incentive Overhead",
+                        "Mean Absolute Shading M",
+                        "Mechanism ECE",
+                        "Tampering Rate",
+                        "B2 Coalition Coverage",
+                        "B2 Coalition Padding",
+                        "Mechanism Coalition Coverage",
+                        "Mechanism Coalition Padding",
+                        "Mechanism Net Welfare",
+                    ]
+                    st.dataframe(
+                        grid_results[[column for column in research_columns if column in grid_results]],
+                        use_container_width=True,
+                    )
+
+                    if len(selected_grid_params) == 1:
+                        parameter_name = selected_grid_params[0]
+                        grid_plot = px.line(
+                            grid_results,
+                            x=parameter_name,
+                            y=["Mechanism Net Welfare", "Mechanism Regret", "Regret Recovery Fraction"],
+                            markers=True,
+                            title=f"Research metrics across {grid_options[parameter_name][0]}",
+                        )
+                    else:
+                        grid_plot = px.scatter(
+                            grid_results,
+                            x=selected_grid_params[0],
+                            y=selected_grid_params[1],
+                            color="Mechanism Net Welfare",
+                            hover_data=[
+                                "Mechanism Regret",
+                                "Regret Recovery Fraction",
+                                "Mechanism Coalition Coverage",
+                            ],
+                            title="Grid combinations colored by Mechanism Net Welfare",
+                        )
+                    st.plotly_chart(grid_plot, use_container_width=True)
+    else:
+        st.info("Select one or more parameters to configure a multi-parameter grid.")
 
 
 def render_theory_tab():
@@ -1258,6 +1468,179 @@ def render_theory_tab():
     )
 
 
+def render_experiment_cards_tab(base_config: SimulationConfig):
+    """Tab 7: Small reproducible scenarios and one-parameter comparisons."""
+    st.subheader("🧪 Interpretable Experiment Cards")
+    st.caption(
+        "Each card runs only when clicked. The fixed seed makes repeated runs deterministic; "
+        "expand a result to inspect the exact parameters used."
+    )
+
+    if "experiment_card_results" not in st.session_state:
+        st.session_state.experiment_card_results = {}
+    if "comparison_card_results" not in st.session_state:
+        st.session_state.comparison_card_results = {}
+
+    st.markdown("### Scenario cards")
+    st.markdown(
+        "These scenarios change one research condition at a time relative to the current "
+        "sidebar configuration."
+    )
+    run_all_scenarios = st.container()
+    with run_all_scenarios:
+        if st.button(
+            "▶▶ Run all scenario cards",
+            key="run_all_scenarios",
+            use_container_width=True,
+        ):
+            progress = st.progress(0.0)
+            for index, card in enumerate(EXPERIMENT_CARDS, start=1):
+                config, results = run_experiment_card(card, base_config)
+                st.session_state.experiment_card_results[card.key] = (config, results)
+                progress.progress(index / len(EXPERIMENT_CARDS))
+            progress.empty()
+            st.success(f"Completed {len(EXPERIMENT_CARDS)} scenario cards.")
+
+    scenario_columns = st.columns(2)
+    for index, card in enumerate(EXPERIMENT_CARDS):
+        with scenario_columns[index % 2]:
+            with st.container(border=True):
+                st.markdown(f"#### {card.title}")
+                st.write(card.explanation)
+                st.caption(
+                    "Overrides: "
+                    + ", ".join(f"`{key}={value}`" for key, value in card.overrides.items())
+                )
+                if st.button(
+                    f"▶ Run {card.title}",
+                    key=f"run_scenario_{card.key}",
+                    use_container_width=True,
+                ):
+                    with st.spinner(f"Running {card.title}..."):
+                        config, results = run_experiment_card(card, base_config)
+                    st.session_state.experiment_card_results[card.key] = (config, results)
+
+                if card.key in st.session_state.experiment_card_results:
+                    config, results = st.session_state.experiment_card_results[card.key]
+                    interpretation = get_interpretation_metrics(results)
+                    summary = results.summary_df[
+                        results.summary_df["System"].isin(
+                            ["Oracle (B4)", "Polling Router (B2)", "Mechanism M"]
+                        )
+                    ][
+                        [
+                            "System",
+                            "Welfare (Gross)",
+                            "Regret",
+                            "Resolution Rate",
+                            "Incentive Overhead",
+                        ]
+                    ]
+                    st.dataframe(summary, hide_index=True, use_container_width=True)
+                    metric_columns = st.columns(4)
+                    metric_columns[0].metric(
+                        "Report shading",
+                        f"{interpretation['Mean Absolute Shading M']:.3f}",
+                    )
+                    metric_columns[1].metric(
+                        "Tampering rate",
+                        f"{interpretation['Tampering Rate']:.3f}",
+                    )
+                    metric_columns[2].metric(
+                        "Coalition coverage",
+                        f"{interpretation['Mechanism Coalition Coverage']:.3f}",
+                    )
+                    metric_columns[3].metric(
+                        "Coalition padding",
+                        f"{interpretation['Mechanism Coalition Padding']:.3f}",
+                    )
+                    with st.expander("Parameters and interpretation"):
+                        parameter_values = {
+                            key: value.value if isinstance(value, (CreditRule, ResolutionRule)) else value
+                            for key, value in config.__dict__.items()
+                        }
+                        st.json(parameter_values)
+                        st.info(
+                            "Compare Mechanism M with B2 for the effect of incentives, and "
+                            "with B4 for the remaining gap to the oracle."
+                        )
+
+    st.markdown("### One-parameter comparison cards")
+    st.markdown(
+        "Each card runs 3–5 values of one parameter while holding all other sidebar values fixed."
+    )
+    if st.button(
+        "📈📈 Run all comparison cards",
+        key="run_all_comparisons",
+        use_container_width=True,
+    ):
+        progress = st.progress(0.0)
+        for index, card in enumerate(COMPARISON_CARDS, start=1):
+            comparison = run_comparison_card(card, base_config)
+            st.session_state.comparison_card_results[card.key] = comparison
+            progress.progress(index / len(COMPARISON_CARDS))
+        progress.empty()
+        st.success(f"Completed {len(COMPARISON_CARDS)} comparison cards.")
+
+    comparison_columns = st.columns(2)
+    for index, card in enumerate(COMPARISON_CARDS):
+        with comparison_columns[index % 2]:
+            with st.container(border=True):
+                st.markdown(f"#### {card.title}")
+                st.write(card.explanation)
+                st.caption(
+                    f"Parameter: `{card.parameter}` | Values: "
+                    + ", ".join(str(value) for value in card.values)
+                )
+                if card.base_overrides:
+                    st.caption(
+                        "Fixed card settings: "
+                        + ", ".join(
+                            f"`{key}={value}`" for key, value in card.base_overrides.items()
+                        )
+                    )
+                if st.button(
+                    f"📈 Compare {card.title}",
+                    key=f"run_comparison_{card.key}",
+                    use_container_width=True,
+                ):
+                    with st.spinner(f"Running {card.title}..."):
+                        comparison = run_comparison_card(card, base_config)
+                    st.session_state.comparison_card_results[card.key] = comparison
+
+                if card.key in st.session_state.comparison_card_results:
+                    comparison = st.session_state.comparison_card_results[card.key]
+                    display_columns = [
+                        card.parameter,
+                        "Mechanism Welfare",
+                        "Mechanism Regret",
+                        "Mechanism Resolution Rate",
+                        "Mechanism Incentive Overhead",
+                        "B2 Polling Regret",
+                        "Mechanism Mean Absolute Shading",
+                        "Mechanism Tampering Rate",
+                        "Mechanism Coalition Coverage",
+                        "Mechanism Coalition Padding",
+                    ]
+                    st.dataframe(
+                        comparison[display_columns],
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                    chart = px.line(
+                        comparison,
+                        x=card.parameter,
+                        y=[
+                            "Mechanism Welfare",
+                            "Mechanism Regret",
+                            "Mechanism Resolution Rate",
+                        ],
+                        markers=True,
+                        title=f"Effect of {card.parameter}",
+                    )
+                    st.plotly_chart(chart, use_container_width=True)
+
+
 # -----------------------------------------------------------------------------
 # Main Application Flow
 # -----------------------------------------------------------------------------
@@ -1292,8 +1675,10 @@ def main():
     render_kpi_cards(results)
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    # A keyed radio navigation persists the selected page across Streamlit reruns.
+    # This keeps button actions inside a page from returning the user to the first page.
+    page = st.radio(
+        "Application section",
         [
             "📊 Benchmark Results",
             "📈 Convergence & Dynamics",
@@ -1301,26 +1686,27 @@ def main():
             "🕸️ Topology & Task Inspector",
             "🎛️ Sensitivity Sweeps",
             "📖 FAI Theoretical Guide",
-        ]
+            "🧪 Experiment Cards",
+        ],
+        key="active_page",
+        horizontal=True,
+        label_visibility="collapsed",
     )
 
-    with tab1:
+    if page == "📊 Benchmark Results":
         render_benchmark_tab(results)
-
-    with tab2:
+    elif page == "📈 Convergence & Dynamics":
         render_dynamics_tab(results)
-
-    with tab3:
+    elif page == "🔬 Strategic Shading & Audits":
         render_shading_tab(results)
-
-    with tab4:
+    elif page == "🕸️ Topology & Task Inspector":
         render_topology_tab(results)
-
-    with tab5:
+    elif page == "🎛️ Sensitivity Sweeps":
         render_sweep_tab(config)
-
-    with tab6:
+    elif page == "📖 FAI Theoretical Guide":
         render_theory_tab()
+    elif page == "🧪 Experiment Cards":
+        render_experiment_cards_tab(config)
 
 
 if __name__ == "__main__":
