@@ -100,3 +100,40 @@ def test_closed_form_shapley_matches_combinatorial(rule, assigned_set):
 
     for i in range(5):
         assert np.isclose(fast_credits[i], exact_credits[i])
+
+
+def test_credit_rules_induce_distinct_reporting_under_static_mode():
+    """Regression test for RQ3: Shapley vs Equal Split must induce distinct
+    equilibrium reporting behavior under static mode (dynamic_mode=False)
+    because agents learn expected credit bar_chi_i via credit_ema.
+    """
+    from src.simulation_runner import SimulationConfig, run_full_simulation
+
+    cfg_shapley = SimulationConfig(
+        num_rounds=25,
+        num_agents=6,
+        credit_rule=CreditRule.SHAPLEY,
+        dynamic_mode=False,
+        seed=42,
+    )
+    res_shapley = run_full_simulation(cfg_shapley)
+
+    cfg_equal = SimulationConfig(
+        num_rounds=25,
+        num_agents=6,
+        credit_rule=CreditRule.EQUAL_SPLIT,
+        dynamic_mode=False,
+        seed=42,
+    )
+    res_equal = run_full_simulation(cfg_equal)
+
+    shapley_reports = [t["reports_M"] for t in res_shapley.task_history]
+    equal_reports = [t["reports_M"] for t in res_equal.task_history]
+
+    mean_r_shapley = np.array([np.mean([r[i] for r in shapley_reports]) for i in range(6)])
+    mean_r_equal = np.array([np.mean([r[i] for r in equal_reports]) for i in range(6)])
+
+    assert not np.allclose(mean_r_shapley, mean_r_equal, atol=1e-3), (
+        f"Shapley reports ({mean_r_shapley}) and Equal Split reports ({mean_r_equal}) "
+        "must diverge under expected credit learning in static mode."
+    )

@@ -570,7 +570,19 @@ def configure_parameters() -> SimulationConfig:
             f"<div class='param-box'><b>{PARAMETER_METADATA['b3_peer_noise_sigma']['symbol']}</b>: {PARAMETER_METADATA['b3_peer_noise_sigma']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        b3_peer_noise_sigma = st.slider("B3 Voting Peer Noise (σ_peer)", 0.0, 0.5, 0.25, 0.05)
+        b3_disabled = (rule == ResolutionRule.CONJUNCTIVE)
+        b3_help = "Single-choice plurality voting only applies to Disjunctive tasks (excluded under Conjunctive mode)."
+        b3_peer_noise_sigma = st.slider(
+            "B3 Voting Peer Noise (σ_peer)",
+            0.0,
+            0.5,
+            0.25,
+            0.05,
+            disabled=b3_disabled,
+            help=b3_help,
+        )
+        if b3_disabled:
+            st.caption("ℹ️ *B3 Voting is excluded under Conjunctive mode because single-choice plurality cannot form multi-agent coalitions.*")
 
     return SimulationConfig(
         num_rounds=num_rounds,
@@ -712,7 +724,7 @@ def render_kpi_cards(results: SimulationResults):
 def render_benchmark_tab(results: SimulationResults):
     """Tab 1: Benchmark Summary Table and Regret Decomposition."""
     st.subheader("📊 Comparative Benchmark Results")
-    st.caption("Matches and expands upon `demo_simulation.py` with full regret decomposition and economics.")
+    st.caption("Comprehensive comparative benchmark results with full regret decomposition and incentive economics.")
 
     summary_df = results.summary_df.copy()
 
@@ -1082,9 +1094,14 @@ def render_topology_tab(results: SimulationResults):
             {"System": "Honest (π_true)", "Assigned Set (A)": str(t_data["A_Honest"]), "Status": "Full Evidence"},
             {"System": "Description (B1)", "Assigned Set (A)": str(t_data["A_B1"]), "Status": "Stale Match"},
             {"System": "Polling Router (B2)", "Assigned Set (A)": str(t_data["A_B2"]), "Status": "Unmediated"},
-            {"System": "Voting Decider (B3)", "Assigned Set (A)": str(t_data["A_B3"]), "Status": "Plurality"},
-            {"System": "Mechanism M", "Assigned Set (A)": str(t_data["A_Mechanism"]), "Status": "Incentivized"},
         ]
+        if results.config.rule != ResolutionRule.CONJUNCTIVE:
+            assign_table.append(
+                {"System": "Voting Decider (B3)", "Assigned Set (A)": str(t_data["A_B3"]), "Status": "Plurality"}
+            )
+        assign_table.append(
+            {"System": "Mechanism M", "Assigned Set (A)": str(t_data["A_Mechanism"]), "Status": "Incentivized"}
+        )
         st.table(pd.DataFrame(assign_table))
 
         # Show module reports in selected round

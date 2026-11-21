@@ -5,7 +5,7 @@ import pytest
 
 from src.baselines import OracleBaselineB4
 from src.metrics import MetricsEvaluator
-from src.types import Evidence, EvidencePayload, PublicReport, ResolutionRule, Task
+from src.types import Evidence, EvidencePayload, PublicPayload, PublicReport, ResolutionRule, Task
 
 
 @pytest.fixture
@@ -120,11 +120,12 @@ def test_calibration_and_incentive_summary(sample_task):
     assert np.isclose(brier, 1.0)
 
     reports = {
-        0: PublicReport(0, 0.9, EvidencePayload(0.9, is_tampered_ground_truth=False)),
-        1: PublicReport(1, 0.9, EvidencePayload(0.9, is_tampered_ground_truth=False)),
-        2: PublicReport(2, 0.8, EvidencePayload(0.8, is_tampered_ground_truth=True)),
-        3: PublicReport(3, 0.1, EvidencePayload(0.1, is_tampered_ground_truth=False)),
+        0: PublicReport(0, 0.9, PublicPayload(0.9)),
+        1: PublicReport(1, 0.9, PublicPayload(0.9)),
+        2: PublicReport(2, 0.8, PublicPayload(0.8)),
+        3: PublicReport(3, 0.1, PublicPayload(0.1)),
     }
+    tampered_flags = {0: False, 1: False, 2: True, 3: False}
     summary = MetricsEvaluator.compute_incentive_summary(
         task=sample_task,
         reports=reports,
@@ -132,6 +133,7 @@ def test_calibration_and_incentive_summary(sample_task):
         credits={0: 5.0, 1: 5.0, 2: 5.0, 3: 0.0},
         penalties={0: 0.0, 1: 0.0, 2: 5.0, 3: 0.0},
         audit_cost=0.2,
+        tampered_flags=tampered_flags,
     )
     assert np.isclose(summary["tampering_rate"], 0.25)
     assert np.isclose(summary["owner_credit_share"], 10.0 / 15.0)

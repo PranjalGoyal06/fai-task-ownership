@@ -17,13 +17,12 @@ def test_simulation_runner_default_static():
     results = run_full_simulation(config)
 
     assert results is not None
-    assert len(results.summary_df) == 6
+    assert len(results.summary_df) == 5
     assert set(results.summary_df["System"]) == {
         "Oracle (B4)",
         "Honest (pi_true)",
         "Description (B1)",
         "Polling Router (B2)",
-        "Voting (B3)",
         "Mechanism M",
     }
     assert len(results.task_history) == 15
