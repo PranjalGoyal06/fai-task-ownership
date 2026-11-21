@@ -1,14 +1,14 @@
 """Streamlit presentation for the frozen Django experiment."""
 from dataclasses import asdict
-
+from pathlib import Path
 import json
 
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 from src.e1.dataset import MODULES
 from src.lab.analysis import compare
+from src.lab.imports import import_graph
 from src.lab.preset import load_preset
 from src.lab.replay import Settings, export, read_recipe, recipe, replay
 
@@ -20,28 +20,26 @@ def run_cached(digest, settings, _preset):
 
 def configure(preset):
     active = st.session_state.get("historical_run", Settings())
-    with st.sidebar.form("historical_parameters"):
-        st.subheader("Reporting game")
-        count = st.slider("Agents with a private incentive", 0, 9, active.strategic_agents,
-                          help="Each issue has nine module owners. The seed picks which owners get this cost.")
-        cost = st.number_input("Private cost of assignment", value=float(active.private_cost), step=.25,
-                               help="A negative cost rewards the agent for being assigned.")
+    with st.form("historical_parameters"):
         scale = st.number_input("Scoring strength", min_value=0., value=float(active.scoring), step=.5,
-                                help="How strongly the outcome rewards an accurate probability.")
-        audit = st.slider("Chance of an audit", 0., 1., float(active.audit), step=.05)
-        rules = ["off", "equal", "shapley"]
-        credit = st.selectbox("Resolution credit", rules, index=rules.index(active.credit),
-                              format_func={"off": "Off", "equal": "Equal split", "shapley": "Shapley"}.get)
-        with st.expander("Reward and audit model"):
+                                help="Higher values give agents a stronger reward for accurate probabilities.")
+        with st.expander("Advanced settings"):
+            count = st.slider("Agents with a private incentive", 0, 9, active.strategic_agents)
+            cost = st.number_input("Private cost of assignment", value=float(active.private_cost), step=.25,
+                                   help="A negative cost rewards the agent for being assigned.")
+            audit = st.slider("Chance of an audit", 0., 1., float(active.audit), step=.05)
+            rules = ["off", "equal", "shapley"]
+            credit = st.selectbox("Resolution credit", rules, index=rules.index(active.credit),
+                                  format_func={"off": "Off", "equal": "Equal split", "shapley": "Shapley"}.get)
             reward = st.select_slider("Reward for a covered fix", (5, 8, 12), value=active.reward)
             detection = st.slider("Detection chance per neighbor", 0., 1., float(active.detection), step=.05)
             fine = st.number_input("Fine for a contradicted payload", min_value=0., value=float(active.fine), step=.5)
-        seed = st.number_input("Random seed", 0, 2**32 - 1, active.seed)
+            seed = st.number_input("Random seed", 0, 2**32 - 1, active.seed)
         if st.form_submit_button("Run replay", type="primary"):
             active = Settings(private_cost=cost, strategic_agents=count, scoring=scale, audit=audit,
                               credit=credit, seed=seed, reward=reward, detection=detection, fine=fine)
             st.session_state["historical_run"] = active
-    with st.sidebar.expander("Restore saved settings"):
+    with st.expander("Restore a replay recipe"):
         upload = st.file_uploader("Replay recipe", type="json")
         if st.button("Apply recipe", disabled=upload is None):
             try:
@@ -80,42 +78,27 @@ def comparison_view(run, polling, ids):
                "Incentive cost counts centered score payments and expected audit spending separately from welfare.")
 
 
-def belief_plot(frame):
-    chart = go.Figure()
-    for name, row in frame.iterrows():
-        chart.add_scatter(x=[row.belief, row.report], y=[name, name], mode="lines",
-                          line=dict(color="#AEC1CA", width=3), showlegend=False, hoverinfo="skip")
-    for name, column, color, symbol in [("Local estimate", "belief", "#146D75", "circle"),
-                                        ("Submitted report", "report", "#B65430", "diamond-open")]:
-        chart.add_scatter(name=name, x=frame[column], y=frame.index, mode="markers",
-                          marker=dict(color=color, size=12, symbol=symbol, line=dict(width=2)),
-                          hovertemplate="%{y} · %{x:.3f}<extra>%{fullData.name}</extra>")
-    chart.update_layout(xaxis=dict(range=[-.04, 1.04], tickformat=".0%", title="Probability of ownership"),
-                        yaxis=dict(autorange="reversed"), height=365,
-                        margin=dict(l=0, r=16, t=0, b=0), legend=dict(orientation="h"))
-    st.plotly_chart(chart, width="stretch")
+ASSETS = Path(__file__).parent
+render_graph = st.components.v2.component(
+    "ownership_import_graph",
+    html='<div class="imports"></div>',
+    css=(ASSETS / "import_graph.css").read_text(),
+    js=(ASSETS / "import_graph.js").read_text(),
+)
 
 
-def graph(snapshot):
-    focus = st.selectbox("Inspect imports for module", MODULES)
-    i = MODULES.index(focus)
-    edges = [edge for edge in snapshot["edges"] if i in edge[:2]]
-    nodes = {i} | {n for edge in edges for n in edge[:2]}
-    dot = ['digraph imports {', 'rankdir=LR;', 'node [shape=box style="rounded,filled"];']
-    for node in sorted(nodes):
-        color = "#AFDAD8" if node == i else "#E7EEF2"
-        dot.append(f'n{node} [label="{MODULES[node]}" fillcolor="{color}" fontcolor="#173641"];')
-    rows = []
-    for source, target, path, line in edges:
-        dot.append(f"n{source} -> n{target};")
-        rows.append({"Importing module": MODULES[source], "Imports module": MODULES[target],
-                     "Pre-fix source": f"https://github.com/django/django/blob/{snapshot['base']}/{path}#L{line}"})
-    st.caption("An arrow points from the importing module to its dependency. Each row links one "
-               "source line for that direction. A module connected in both directions counts as one audit neighbor.")
-    st.graphviz_chart("\n".join([*dot, "}"]))
-    if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
-                     column_config={"Pre-fix source": st.column_config.LinkColumn(display_text="View import")})
+def graph(preset, key, frame=None):
+    snapshot = preset.snapshots[key]
+    assigned = [] if frame is None else frame.index[frame.assigned]
+    owners = [] if frame is None else frame.index[frame.patch_owner]
+    data = import_graph(preset.manifest["modules"], snapshot, preset.manifest["repository"], assigned, owners)
+    st.subheader("Project import graph")
+    st.caption("An arrow points to the imported module. A double arrow means both modules import each other.")
+    if frame is not None:
+        st.caption("Teal fill = assigned by the selected policy · diamond = changed in the patch.")
+    render_graph(data=data, key="historical-import-graph")
+    st.caption(f"Pre-fix revision `{snapshot['base'][:12]}` · {len(data['nodes'])} modules · "
+               f"{len(snapshot['edges'])} directed imports")
 
 
 def evidence(snapshot, frame):
@@ -141,75 +124,117 @@ def evidence(snapshot, frame):
         st.caption("The extractor recorded no matching path or symbol citation for this module.")
 
 
-def inspect_issue(preset, run, polling, ids):
-    key = st.selectbox("Historical fix", list(ids),
-                       format_func=lambda k: f"#{k.rsplit('-', 1)[1]} · {preset.issues.at[k, 'title']}")
-    snapshot = preset.snapshots[key]
-    frame = run.agents.loc[key]
-    url = "https://github.com/django/django/pull/" + key.rsplit("-", 1)[1]
-    st.caption(f"Pre-fix revision {snapshot['base'][:12]} · [Resolving pull request]({url})")
-    step = st.radio("Issue inspector", ["Evidence", "Reports", "Assignment", "Settlement", "Import graph"],
-                    index=1, horizontal=True)
-    if step == "Evidence":
-        evidence(snapshot, frame)
-    elif step == "Reports":
-        st.write("Each dot is a module’s estimate from pre-fix evidence. The diamond is the "
-                 "probability its agent submitted after accounting for incentives.")
-        belief_plot(frame)
-        st.dataframe(frame[["private_cost", "belief", "report", "altered_payload", "audited",
-                            "contradicted", "selection_input"]], width="stretch")
-    elif step == "Assignment":
-        assigned = frame.index[frame.assigned].tolist()
-        st.write("**Selected modules**", ", ".join(assigned) or "Empty set")
-        st.caption("The mechanism ranks the probabilities available after audit checks and chooses "
-                   "the set with the highest expected reward minus assignment costs.")
-        st.dataframe(pd.DataFrame({"Selection probability": frame.selection_input,
-                                   "Assigned by polling": polling.agents.loc[key].assigned,
-                                   "Assigned by selected settings": frame.assigned}), width="stretch")
-    elif step == "Settlement":
-        st.write("**Modules changed in the historical fix**", ", ".join(frame.index[frame.patch_owner]))
-        row = run.issues.loc[key]
-        st.write(f"{'All required modules covered' if row.coverage else 'Fix missed'} · "
-                 f"{row.assignments:.0f} assignments · {row.padding:.0f} extra · {row.welfare:g} units of welfare.")
-        st.dataframe(frame[["assigned", "patch_owner", "score", "credit"]], width="stretch")
-    else:
-        graph(snapshot)
+def switch_view(view):
+    st.session_state["historical_view"] = view
 
 
-def main():
-    st.title("Task ownership lab")
-    st.subheader("Django historical replay")
-    try:
-        preset = load_preset()
-    except (ValueError, OSError, KeyError) as error:
-        st.error(f"Could not load the Django preset. Check the preset and report files. {error}")
-        return
-    counts = preset.manifest["split_counts"]
-    st.write(f"Replay {counts['test']} fixes with nine module owners. "
-             f"The ownership models learned from {counts['train']} earlier fixes. "
-             f"Another {counts['validation']} supplied calibration data and examples for fitting reports.")
-    st.caption("Ownership refers to modules changed in the historical patch. Polling uses the same "
-               "private incentives and random draws, with scoring, audits and credit switched off.")
-    settings = configure(preset)
-    with st.spinner("Solving the reporting game and its paired polling control…"):
-        run = run_cached(preset.digest, settings, preset)
-        polling = run_cached(preset.digest, settings.polling(), preset)
-    st.caption(f"Applied settings · {settings.strategic_agents} agents at private cost {settings.private_cost:g} · "
-               f"scoring {settings.scoring:g} · audit {settings.audit:.0%} · detection {settings.detection:.0%} · "
-               f"fine {settings.fine:g} · reward {settings.reward} · credit {settings.credit} · seed {settings.seed}")
-    slice_name = st.radio("Compare the same issues under both policies", ["All fixes", "Single-module", "Multi-module"],
-                          horizontal=True)
+def open_inspector(settings, subset):
+    st.session_state["inspection_settings"] = settings
+    st.session_state["inspection_subset"] = subset
+    switch_view("inspect")
+
+
+def paired_runs(preset, settings):
+    return (run_cached(preset.digest, settings, preset),
+            run_cached(preset.digest, settings.polling(), preset))
+
+
+def solver_warnings(run, polling):
+    for name, result in [("Selected policy", run), ("Polling", polling)]:
+        if result.diagnostic["status"] != "converged":
+            diagnostics(result, name)
+
+
+def issue_ids(run, subset):
     sizes = run.issues.k
-    ids = sizes.index
-    if slice_name == "Single-module":
-        ids = sizes.index[sizes == 1]
-    elif slice_name == "Multi-module":
-        ids = sizes.index[sizes > 1]
-    comparison_view(run, polling, ids)
-    diagnostics(run, "Selected policy")
-    diagnostics(polling, "Polling")
-    st.divider()
-    inspect_issue(preset, run, polling, ids)
+    if subset == "Multi-module":
+        return sizes.index[sizes > 1]
+    if subset == "Single-module":
+        return sizes.index[sizes == 1]
+    return sizes.index
+
+
+def overview(preset):
+    run, polling = paired_runs(preset, Settings())
+    st.caption("Django · Published historical replay")
+    st.title("When a module owner benefits from being assigned, can rewarding accurate reports reduce unnecessary assignments?")
+    solver_warnings(run, polling)
+    story, diagram = st.columns([1, 1.15], gap="large")
+    with story:
+        st.write("Six of nine module owners get a private benefit from being picked. "
+                 "Polling asks each owner how likely it is to be needed. Scoring also rewards "
+                 "an accurate probability after the fix is revealed.")
+        multi = run.issues.k > 1
+        st.metric(f"Assignments across {len(run.issues)} fixes · polling → scoring",
+                  f"{polling.issues.assignments.sum()} → {run.issues.assignments.sum()}")
+        st.write(f"Scoring covered **{run.issues.coverage.sum()} fixes**, up from **{polling.issues.coverage.sum()}**. "
+                 "A fix is covered when every module changed by its patch is assigned.")
+        st.write(f"Among the **{multi.sum()} multi-module fixes**, coverage fell from "
+                 f"**{polling.issues.loc[multi, 'coverage'].sum()} to {run.issues.loc[multi, 'coverage'].sum()}**.")
+        with st.container(horizontal=True):
+            st.button("Inspect a fix", type="primary", on_click=open_inspector, args=(Settings(), "All fixes"))
+            st.button("Change the experiment", on_click=switch_view, args=("experiment",))
+    with diagram:
+        graph(preset, preset.issues.index[0])
+
+
+def inspector(preset):
+    settings = st.session_state["inspection_settings"]
+    subset = st.session_state["inspection_subset"]
+    run, polling = paired_runs(preset, settings)
+    ids = issue_ids(run, subset)
+    selected, base = run.issues.loc[ids], polling.issues.loc[ids]
+    st.title("Inspect a fix")
+    st.caption(f"Django · {subset} · Scoring strength {settings.scoring:g}")
+    solver_warnings(run, polling)
+    gained = selected.coverage > base.coverage
+    lost = selected.coverage < base.coverage
+    different = selected.assigned != base.assigned
+    groups = {"Newly covered": ids[gained], "Newly missed": ids[lost],
+              "Different assignments": ids[different], "All fixes": ids}
+    options = [label for label, matches in groups.items() if len(matches)]
+    group = st.radio("Show fixes", options, horizontal=True)
+    key = st.selectbox("Historical fix", list(groups[group]),
+                       format_func=lambda k: f"#{k.rsplit('-', 1)[1]} · {preset.issues.at[k, 'title']}")
+    before, after = polling.agents.loc[key], run.agents.loc[key]
+    title = preset.issues.at[key, "title"]
+    st.subheader(title)
+    st.caption(f"[Resolving pull request](https://github.com/django/django/pull/{key.rsplit('-', 1)[1]})")
+    outcomes = ["missed", "covered"]
+    st.write(f"Polling **{outcomes[int(base.at[key, 'coverage'])]}** this fix with "
+             f"{int(base.at[key, 'assignments'])} assignments. The selected policy "
+             f"**{outcomes[int(selected.at[key, 'coverage'])]}** it with {int(selected.at[key, 'assignments'])}.")
+    st.write("Each agent starts with a local estimate. Its incentives can change the probability it reports. "
+             "The last column shows which modules the eventual patch changed.")
+    ledger = pd.DataFrame({"Local estimate": after.belief, "Polling report": before.report,
+                           "Selected report": after.report, "Polling assigned": before.assigned,
+                           "Selected assigned": after.assigned, "Patch owner": after.patch_owner})
+    st.dataframe(ledger.style.format({name: "{:.1%}" for name in ledger.columns[:3]}), width="stretch")
+    graph(preset, key, after)
+    with st.expander("Evidence, audits and payouts"):
+        evidence(preset.snapshots[key], after)
+        st.dataframe(after[["private_cost", "altered_payload", "audited", "contradicted",
+                            "selection_input", "score", "credit"]], width="stretch")
+    st.button("Change the experiment", on_click=switch_view, args=("experiment",))
+
+
+def experiment(preset):
+    st.title("Change the experiment")
+    st.write("Try changing the reward for an accurate report. Each run compares your settings with "
+             "polling on the same fixes, with the same private incentives.")
+    settings = configure(preset)
+    run, polling = paired_runs(preset, settings)
+    solver_warnings(run, polling)
+    st.subheader("Replay results")
+    st.caption(f"Applied scoring {settings.scoring:g} · {settings.strategic_agents} agents with a private incentive")
+    slice_name = st.radio("Compare fixes", ["All fixes", "Single-module", "Multi-module"], horizontal=True)
+    comparison_view(run, polling, issue_ids(run, slice_name))
+    st.button("Inspect a fix", on_click=open_inspector, args=(settings, slice_name))
+    with st.expander("Applied settings and solver details"):
+        st.json(asdict(settings))
+        for name, result in [("Selected policy", run), ("Polling", polling)]:
+            if result.diagnostic["status"] == "converged":
+                diagnostics(result, name)
     with st.expander("Published benchmarks"):
         st.write("Published results at reward 8 on this slice. The pooled benchmark estimates likely owner sets from earlier "
                  "fixes and pooled pre-fix evidence. A fix counts as covered when every changed module is assigned.")
@@ -226,6 +251,24 @@ def main():
                            file_name="recipe.json", mime="application/json")
         st.download_button("Download replay ZIP", data=export(preset, run, polling),
                            file_name="django-replay.zip", mime="application/zip")
+
+
+
+def main():
+    try:
+        preset = load_preset()
+    except (ValueError, OSError, KeyError) as error:
+        st.error(f"Could not load the Django preset. Check the preset and report files. {error}")
+        return
+    view = st.session_state.get("historical_view", "overview")
+    if view == "overview":
+        overview(preset)
+        return
+    st.button("← Published replay", on_click=switch_view, args=("overview",))
+    if view == "inspect":
+        inspector(preset)
+    else:
+        experiment(preset)
 
 
 main()

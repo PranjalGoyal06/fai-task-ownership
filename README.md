@@ -73,11 +73,13 @@ Run the unified app from the repository root. The historical page ships with a f
 python -m streamlit run lab.py
 ```
 
-**Try the historical replay.** Start with six of nine owners privately rewarded for assignment, scoring strength eight and seed 331. Compare polling with the selected policy across all fixes, then select **Multi-module**. Choose a fix to inspect its lexical evidence, submitted reports, assignments, settlement and pre-fix import graph. The module map is fixed for this benchmark. The sidebar count controls how many owners have a private incentive on each issue.
+**Explore the published replay.** The opening comparison uses the original six-acquirer settings and seed 331. Choose **Inspect a fix** to compare both policies’ reports and assignments against the patch. Switch between newly covered and newly missed fixes to see both sides of the coverage result. The project import graph includes every module at the displayed pre-fix revision. Select a module to highlight its connections or a connection to see its source citations. A two-headed arrow carries citations for both directions.
+
+**Change the experiment** opens scoring strength first. Expand **Advanced settings** for private incentives, audits, credit, reward and seed. The Django preset has nine fixed owners. The agent-count control changes how many receive a private incentive.
 
 The lab keeps the ownership probabilities fixed and refits numerical reporting policies on the earlier validation period each time settings change. Press **Run replay** to apply edits. Both policies face the same later fixes and private type draws. The pooled benchmark for each reward uses pre-fix evidence. Changed files serve as the ownership proxy. Trying settings on the held-out issues is exploratory.
 
-**Save and replay.** Under **Reproduce this run**, download the settings as JSON or the complete ZIP with both policies’ issue and agent tables. Restore the JSON in the sidebar or run it from the command line. The recipe records the frozen input digest. Use the same checkout and the [recorded Python environment](reports/e1/environment.txt) for byte comparisons.
+**Save and replay.** Under **Reproduce this run**, download the settings as JSON or the complete ZIP with both policies’ issue and agent tables. Restore the JSON under **Restore a replay recipe** in the experiment view or run it from the command line. The recipe records the frozen input digest. Use the same checkout and the [recorded Python environment](reports/e1/environment.txt) for byte comparisons.
 
 ```sh
 python -m src.lab.replay --recipe recipe.json --output replay.zip
