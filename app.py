@@ -252,7 +252,7 @@ def configure_parameters() -> SimulationConfig:
         num_rounds = st.slider(
             "Rounds (T)",
             min_value=10,
-            max_value=300,
+            max_value=1000,
             value=p_dict.get("num_rounds", 100),
             step=10,
         )
@@ -264,10 +264,10 @@ def configure_parameters() -> SimulationConfig:
         num_agents = st.slider(
             "Agents (N)",
             min_value=4,
-            max_value=14,
+            max_value=100,
             value=p_dict.get("num_agents", 12),
             step=1,
-            help="For exact combinatorial conjunctive search, N <= 14 is recommended.",
+            help="Above 14 agents, assignment search uses the greedy marginal method instead of exact combinatorial search.",
         )
 
         st.markdown(
@@ -280,15 +280,28 @@ def configure_parameters() -> SimulationConfig:
             index=["mixed", "deflection", "acquisition", "custom"].index(
                 p_dict.get("agent_regime", "mixed")
             ),
+            help="Mixed: 30% deflectors, 30% acquirers, 40% neutral. Deflection: 50% deflectors, 50% neutral. Acquisition: 50% acquirers, 50% neutral.",
         )
+        if agent_regime == "mixed":
+            st.caption("30% deflectors | 30% acquirers | 40% neutral")
+        elif agent_regime == "deflection":
+            st.caption("50% deflectors | 50% neutral; no acquirers")
+        elif agent_regime == "acquisition":
+            st.caption("50% acquirers | 50% neutral; no deflectors")
 
         deflector_ratio = 0.3
         acquirer_ratio = 0.3
         neutral_ratio = 0.4
         if agent_regime == "custom":
-            st.markdown("Custom population proportions (must sum to ~1.0):")
+            st.markdown("Custom population proportions (ϕ_defl + ϕ_acq ≤ 1):")
             deflector_ratio = st.slider("Deflector Fraction (ϕ_defl)", 0.0, 1.0, 0.33, 0.05)
-            acquirer_ratio = st.slider("Acquirer Fraction (ϕ_acq)", 0.0, 1.0, 0.33, 0.05)
+            acquirer_ratio = st.slider(
+                "Acquirer Fraction (ϕ_acq)",
+                0.0,
+                max(0.0, 1.0 - deflector_ratio),
+                min(0.33, max(0.0, 1.0 - deflector_ratio)),
+                0.05,
+            )
             neutral_ratio = max(0.0, 1.0 - deflector_ratio - acquirer_ratio)
             st.caption(f"Aligned Fraction (ϕ_neutral): {neutral_ratio:.2f}")
 
@@ -296,19 +309,34 @@ def configure_parameters() -> SimulationConfig:
             f"<div class='param-box'><b>{PARAMETER_METADATA['deflector_ell']['symbol']}</b>: {PARAMETER_METADATA['deflector_ell']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        deflector_ell = st.number_input("Deflector Cost (ℓ_defl > 0)", value=2.0, step=0.5)
+        deflector_ell = st.number_input(
+            "Deflector Cost (ℓ_defl ≥ 0)",
+            min_value=0.0,
+            value=2.0,
+            step=0.5,
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['acquirer_ell']['symbol']}</b>: {PARAMETER_METADATA['acquirer_ell']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        acquirer_ell = st.number_input("Acquirer Benefit (ℓ_acq < 0)", value=-2.0, step=0.5)
+        acquirer_ell = st.number_input(
+            "Acquirer Benefit (ℓ_acq ≤ 0)",
+            max_value=0.0,
+            value=-2.0,
+            step=0.5,
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['seed']['symbol']}</b>: {PARAMETER_METADATA['seed']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        seed = st.number_input("Random Seed (s)", value=p_dict.get("seed", 42), step=1)
+        seed = st.number_input(
+            "Random Seed (s)",
+            min_value=0,
+            value=p_dict.get("seed", 42),
+            step=1,
+        )
 
     # Group 2: Mechanism M Incentives
     with st.sidebar.expander("⚖️ 2. Mechanism M (Scoring, Audits, Credit)", expanded=True):
@@ -364,7 +392,12 @@ def configure_parameters() -> SimulationConfig:
             f"<div class='param-box'><b>{PARAMETER_METADATA['cost_per_audit']['symbol']}</b>: {PARAMETER_METADATA['cost_per_audit']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        cost_per_audit = st.number_input("Cost per Audit (c_a)", value=0.1, step=0.05)
+        cost_per_audit = st.number_input(
+            "Cost per Audit (c_a)",
+            min_value=0.0,
+            value=0.1,
+            step=0.05,
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['credit_rule']['symbol']}</b>: {PARAMETER_METADATA['credit_rule']['desc']}</div>",
@@ -424,6 +457,7 @@ def configure_parameters() -> SimulationConfig:
         )
         reward_per_owner = st.number_input(
             "Reward per Owner (R_k)",
+            min_value=0.0,
             value=float(p_dict.get("reward_per_owner", 5.0)),
             step=1.0,
         )
@@ -432,7 +466,12 @@ def configure_parameters() -> SimulationConfig:
             f"<div class='param-box'><b>{PARAMETER_METADATA['default_cost']['symbol']}</b>: {PARAMETER_METADATA['default_cost']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        default_cost = st.number_input("Social Cost per Agent (c_i)", value=1.0, step=0.25)
+        default_cost = st.number_input(
+            "Social Cost per Agent (c_i)",
+            min_value=0.0,
+            value=1.0,
+            step=0.25,
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['cluster_prob']['symbol']}</b>: {PARAMETER_METADATA['cluster_prob']['desc']}</div>",
@@ -450,7 +489,12 @@ def configure_parameters() -> SimulationConfig:
             f"<div class='param-box'><b>{PARAMETER_METADATA['task_noise_sigma']['symbol']}</b>: {PARAMETER_METADATA['task_noise_sigma']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        task_noise_sigma = st.number_input("Task Embedding Noise (σ_task)", value=0.2, step=0.05)
+        task_noise_sigma = st.number_input(
+            "Task Embedding Noise (σ_task)",
+            min_value=0.0,
+            value=0.2,
+            step=0.05,
+        )
 
     # Group 4: Repository Environment & Dependency Graph
     with st.sidebar.expander("🕸️ 4. Environment & Topology Graph", expanded=False):
@@ -494,12 +538,23 @@ def configure_parameters() -> SimulationConfig:
             f"<div class='param-box'><b>{PARAMETER_METADATA['signal_sensitivity']['symbol']}</b>: {PARAMETER_METADATA['signal_sensitivity']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        signal_sensitivity = st.number_input("Signal Sensitivity (β_1)", value=8.0, step=1.0)
+        signal_sensitivity = st.number_input(
+            "Signal Sensitivity (β_1)",
+            min_value=0.0,
+            value=8.0,
+            step=1.0,
+        )
 
         use_auto_midpoint = st.checkbox("Auto-compute midpoint (0.23 * sqrt(2/k))", value=True)
         signal_midpoint_override = 0.23
         if not use_auto_midpoint:
-            signal_midpoint_override = st.number_input("Manual Midpoint", value=0.23, step=0.05)
+            signal_midpoint_override = st.number_input(
+                "Manual Midpoint",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.23,
+                step=0.05,
+            )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['calibration_kappa']['symbol']}</b>: {PARAMETER_METADATA['calibration_kappa']['desc']}</div>",
@@ -547,10 +602,26 @@ def configure_parameters() -> SimulationConfig:
         st.markdown("<b>Agent Internal Heuristics:</b>", unsafe_allow_html=True)
         agent_theta0 = st.number_input("Assignment Intercept (θ_0)", value=-2.0, step=0.5)
         agent_theta1 = st.number_input("Assignment Slope (θ_1)", value=4.0, step=0.5)
-        agent_online_lr = st.number_input("Assignment Learning Rate (lr)", value=0.05, step=0.01)
+        agent_online_lr = st.number_input(
+            "Assignment Learning Rate (lr)",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.05,
+            step=0.01,
+        )
         agent_evasion_benefit_factor = st.slider("Evasion Benefit Factor", 0.1, 1.0, 0.5, 0.1)
-        agent_tamper_deflect_signal = st.number_input("Forged Deflect Signal", value=-0.5, step=0.1)
-        agent_tamper_acquire_signal = st.number_input("Forged Acquire Signal", value=1.0, step=0.1)
+        agent_tamper_deflect_signal = st.number_input(
+            "Forged Deflect Signal",
+            max_value=0.0,
+            value=-0.5,
+            step=0.1,
+        )
+        agent_tamper_acquire_signal = st.number_input(
+            "Forged Acquire Signal",
+            min_value=0.0,
+            value=1.0,
+            step=0.1,
+        )
         agent_fp_iterations = st.slider("Fixed-Point Iterations (n_fp)", 2, 16, 8, 1)
 
     # Group 7: Baselines Specifics
@@ -855,7 +926,6 @@ def render_dynamics_tab(results: SimulationResults):
             labels={"cum_welfare": "Cumulative Social Welfare", "round": "Simulation Round"},
             color_discrete_map={
                 "Oracle (B4)": "#10B981",
-                "Honest (pi_true)": "#06B6D4",
                 "Description (B1)": "#F59E0B",
                 "Polling Router (B2)": "#EF4444",
                 "Voting (B3)": "#8B5CF6",
@@ -875,7 +945,6 @@ def render_dynamics_tab(results: SimulationResults):
             labels={"running_mean_regret": "Running Mean Regret", "round": "Simulation Round"},
             color_discrete_map={
                 "Oracle (B4)": "#10B981",
-                "Honest (pi_true)": "#06B6D4",
                 "Description (B1)": "#F59E0B",
                 "Polling Router (B2)": "#EF4444",
                 "Voting (B3)": "#8B5CF6",
@@ -1098,7 +1167,6 @@ def render_topology_tab(results: SimulationResults):
         # Assignment sets across routers
         assign_table = [
             {"System": "Oracle (B4)", "Assigned Set (A)": str(t_data["A_Oracle"]), "Status": "Optimal"},
-            {"System": "Honest (π_true)", "Assigned Set (A)": str(t_data["A_Honest"]), "Status": "Full Evidence"},
             {"System": "Description (B1)", "Assigned Set (A)": str(t_data["A_B1"]), "Status": "Stale Match"},
             {"System": "Polling Router (B2)", "Assigned Set (A)": str(t_data["A_B2"]), "Status": "Unmediated"},
         ]

@@ -95,6 +95,64 @@ class SimulationConfig:
     agent_tamper_acquire_signal: float = 1.0
     agent_fp_iterations: int = 8
 
+    def __post_init__(self) -> None:
+        """Fail fast when configuration values violate model domains."""
+        if self.seed < 0:
+            raise ValueError("seed must be non-negative")
+        if not 1 <= self.num_rounds:
+            raise ValueError("num_rounds must be at least 1")
+        if not 1 <= self.num_agents <= 100:
+            raise ValueError("num_agents must be between 1 and 100")
+        if not 0.0 <= self.deflector_ratio <= 1.0:
+            raise ValueError("deflector_ratio must be between 0 and 1")
+        if not 0.0 <= self.acquirer_ratio <= 1.0:
+            raise ValueError("acquirer_ratio must be between 0 and 1")
+        if self.deflector_ratio + self.acquirer_ratio > 1.0:
+            raise ValueError("deflector_ratio + acquirer_ratio must not exceed 1")
+        if self.deflector_ell < 0.0:
+            raise ValueError("deflector_ell must be non-negative")
+        if self.acquirer_ell > 0.0:
+            raise ValueError("acquirer_ell must be non-positive")
+        if self.reward_per_owner < 0.0 or self.resolution_reward < 0.0:
+            raise ValueError("task rewards must be non-negative")
+        if self.default_cost < 0.0:
+            raise ValueError("default_cost must be non-negative")
+        if self.task_noise_sigma < 0.0:
+            raise ValueError("task_noise_sigma must be non-negative")
+        if not 0.0 <= self.audit_rate <= 1.0:
+            raise ValueError("audit_rate must be between 0 and 1")
+        if not 0.0 <= self.audit_detection_delta <= 1.0:
+            raise ValueError("audit_detection_delta must be between 0 and 1")
+        if self.audit_penalty < 0.0:
+            raise ValueError("audit_penalty must be non-negative")
+        if self.cost_per_audit < 0.0:
+            raise ValueError("cost_per_audit must be non-negative")
+        if not 0.0 <= self.missing_evidence_prob <= 1.0:
+            raise ValueError("missing_evidence_prob must be between 0 and 1")
+        if self.obs_noise_sigma < 0.0:
+            raise ValueError("obs_noise_sigma must be non-negative")
+        if self.b1_desc_noise_sigma < 0.0 or self.b3_peer_noise_sigma < 0.0:
+            raise ValueError("baseline noise values must be non-negative")
+        if self.agent_online_lr < 0.0:
+            raise ValueError("agent_online_lr must be non-negative")
+        if not 0.0 <= self.score_scale:
+            raise ValueError("score_scale must be non-negative")
+        if not 0.0 <= self.cluster_prob <= 1.0:
+            raise ValueError("cluster_prob must be between 0 and 1")
+        if not 0.0 <= self.hop_decay <= 1.0:
+            raise ValueError("hop_decay must be between 0 and 1")
+        if not 0.0 < self.calibration_kappa:
+            raise ValueError("calibration_kappa must be positive")
+        if not 0.0 <= self.b1_staleness_rho <= 1.0:
+            raise ValueError("b1_staleness_rho must be between 0 and 1")
+        if self.use_coalition_range:
+            if not 1 <= self.coalition_min <= self.coalition_max:
+                raise ValueError("coalition bounds must satisfy 1 <= min <= max <= num_agents")
+            self.coalition_min = min(self.coalition_min, self.num_agents)
+            self.coalition_max = min(self.coalition_max, self.num_agents)
+        elif not 1 <= self.coalition_size_k <= self.num_agents:
+            raise ValueError("coalition_size_k must be between 1 and num_agents")
+
     @property
     def coalition_size_range(self) -> tuple[int, int] | None:
         if self.use_coalition_range:
@@ -592,7 +650,6 @@ def run_full_simulation(
 
     system_names = [
         "Oracle (B4)",
-        "Honest (pi_true)",
         "Description (B1)",
         "Polling Router (B2)",
         "Voting (B3)",
@@ -685,15 +742,12 @@ def run_full_simulation(
         A_B1 = b1_router.select(task)
         A_B2 = b2_polling.select(task, reports_B2)
         A_B3 = b3_voting.select(task, reports_B2)
-        A_H, _, _, _ = MetricsEvaluator.compute_truthful_benchmark(task, evidence_dict, rng=rng)
-
         for i in A_M:
             agent_assigned_M[i] += 1
         for i in A_B2:
             agent_assigned_B2[i] += 1
 
         # 5. Regret Decompositions
-        reg_H = MetricsEvaluator.compute_regret_decomposition(task, A_H)
         reg_B1 = MetricsEvaluator.compute_regret_decomposition(task, A_B1)
         reg_B2 = MetricsEvaluator.compute_regret_decomposition(task, A_B2)
         reg_B3 = MetricsEvaluator.compute_regret_decomposition(task, A_B3)
@@ -736,7 +790,6 @@ def run_full_simulation(
 
         # Accumulate metrics
         eval_pairs = [
-            ("Honest (pi_true)", reg_H, A_H),
             ("Description (B1)", reg_B1, A_B1),
             ("Polling Router (B2)", reg_B2, A_B2),
             ("Voting (B3)", reg_B3, A_B3),
@@ -784,7 +837,6 @@ def run_full_simulation(
                     for i in range(num_agents)
                 },
                 "A_Oracle": sorted(list(A_O)),
-                "A_Honest": sorted(list(A_H)),
                 "A_B1": sorted(list(A_B1)),
                 "A_B2": sorted(list(A_B2)),
                 "A_B3": sorted(list(A_B3)),

@@ -23,10 +23,9 @@ def test_simulation_runner_default_static():
     results = run_full_simulation(config)
 
     assert results is not None
-    assert len(results.summary_df) == 5
+    assert len(results.summary_df) == 4
     assert set(results.summary_df["System"]) == {
         "Oracle (B4)",
-        "Honest (pi_true)",
         "Description (B1)",
         "Polling Router (B2)",
         "Mechanism M",
@@ -74,7 +73,23 @@ def test_simulation_runner_disjunctive_rule():
         seed=77,
     )
     results = run_full_simulation(config)
-    assert len(results.summary_df) == 6
+    assert len(results.summary_df) == 5
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"num_agents": 101}, "num_agents"),
+        ({"deflector_ratio": 0.7, "acquirer_ratio": 0.5}, "deflector_ratio"),
+        ({"cost_per_audit": -0.1}, "cost_per_audit"),
+        ({"task_noise_sigma": -0.2}, "task_noise_sigma"),
+    ],
+)
+def test_simulation_config_rejects_invalid_domains(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        config_kwargs = {"num_rounds": 1, "num_agents": 4}
+        config_kwargs.update(kwargs)
+        SimulationConfig(**config_kwargs)
 
 
 def test_parameter_sweep_runner():
