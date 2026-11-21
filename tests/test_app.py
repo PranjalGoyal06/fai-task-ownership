@@ -1,7 +1,7 @@
 """Automated tests for simulation runner and app configuration."""
 
 import pytest
-from demo_simulation import (
+from src.experiment_cards import (
     COMPARISON_CARDS,
     EXPERIMENT_CARDS,
     build_experiment_config,

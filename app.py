@@ -26,7 +26,7 @@ from src.simulation_runner import (
     run_parameter_sweep,
 )
 from src.types import CreditRule, ResolutionRule
-from demo_simulation import (
+from src.experiment_cards import (
     COMPARISON_CARDS,
     EXPERIMENT_CARDS,
     get_interpretation_metrics,
