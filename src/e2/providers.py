@@ -111,12 +111,65 @@ class GeminiProvider:
         return result["choices"][0]["message"]["content"]
 
 
+class OllamaProvider:
+    """Local Ollama server using its OpenAI-compatible chat endpoint."""
+
+    sampling = "temperature=0.0"
+
+    def __init__(
+        self,
+        model: str | None = None,
+        base_url: str | None = None,
+    ):
+        self.model = model or os.getenv("E2_LLM_MODEL") or "qwen3:4b"
+        self.base_url = (
+            base_url
+            or os.getenv("OLLAMA_BASE_URL")
+            or "http://localhost:11434/v1"
+        ).rstrip("/")
+        self.last_usage: dict[str, int] = {}
+
+    def complete(self, system: str, prompt: str) -> str:
+        self.last_usage = {}
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+        }
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=300) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        usage = result.get("usage")
+        if isinstance(usage, dict):
+            self.last_usage = {
+                key: int(usage[key])
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                if isinstance(usage.get(key), int)
+            }
+        return result["choices"][0]["message"]["content"]
+
+
 def provider_from_environment() -> LLMProvider:
     provider = os.getenv("E2_LLM_PROVIDER", "").lower()
+    if provider == "ollama":
+        return OllamaProvider()
     if provider == "openai":
         return OpenAICompatibleProvider()
     if provider == "gemini":
         return GeminiProvider()
+    if provider:
+        raise ValueError(
+            "E2_LLM_PROVIDER must be one of: ollama, openai, gemini"
+        )
     if os.getenv("OPENAI_API_KEY"):
         return OpenAICompatibleProvider()
     if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):

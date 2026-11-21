@@ -120,6 +120,39 @@ python -m src.e2.replay results/inputs results/e2 --issues-per-split 50
 pytest tests/test_e2.py -q
 ```
 
+## E2-D: Direct verbalized-confidence pilot
+
+E2-D is a separate, no-training experiment. It asks the LLM once per issue/module
+to return an ownership probability, supported by optional pre-fix source citations.
+It does not fit or fine-tune a probability head. Historical module labels are used
+only after replay and settlement.
+
+The no-tools form uses only issue text, module identity and an earlier-issue module
+base rate. The snippets form supplies bounded pre-fix source snippets and rejects
+cross-module or mismatched citations.
+See [E2D_DESIGN.md](./E2D_DESIGN.md) for the model mapping, evaluation protocol,
+and explicit scope limitations.
+
+For local inference, install Ollama, download a model (for example
+`ollama pull qwen3:4b`), and ensure its server is running. In PowerShell, select it
+explicitly:
+
+```powershell
+$env:E2_LLM_PROVIDER = "ollama"
+$env:E2_LLM_MODEL = "qwen3:4b"
+$env:OLLAMA_BASE_URL = "http://localhost:11434/v1"
+```
+
+`--max-issues` limits each selected split independently. For example, the following
+requests up to 50 validation and 50 test issues (9 module calls per issue):
+
+```powershell
+python -m src.e2.direct results/inputs results/e2d-local --mode no_tools --max-issues 50
+
+# Replay cached probabilities through the existing reporting game
+python -m src.e2.direct results/inputs results/e2d-local --replay
+```
+
 ## Historical issue experiment
 
 The [grounded replay report](reports/e1/REPORT.md) gives the results, uncertainty and limitations. The [reproduction guide](reports/e1/REPRODUCE.md) covers setup, verification and the complete run.
