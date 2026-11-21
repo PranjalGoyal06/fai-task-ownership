@@ -59,9 +59,16 @@ def base_times(repository, rows):
     missing = [line.split()[0] for line in available.splitlines() if line.endswith(" missing")]
     if missing:
         subprocess.run(git + ["fetch", "--no-tags", "origin", *missing], check=True)
-    history = subprocess.check_output(git + ["log", "--no-walk", "--format=%H %ct", *refs], text=True)
+    commits = []
+    for start in range(0, len(refs), 100):
+        batch = refs[start:start + 100]
+        history = subprocess.check_output(
+            git + ["log", "--no-walk", "--format=%H %ct", *batch],
+            text=True,
+        )
+        commits.extend(map(str.split, history.splitlines()))
     return {ref: datetime.fromtimestamp(int(sec), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            for ref, sec in map(str.split, history.splitlines())}
+            for ref, sec in commits}
 
 
 def prepare(directory, repository):

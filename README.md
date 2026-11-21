@@ -96,6 +96,30 @@ python demo_simulation.py
 ### Default Benchmark Parameters & Reproducibility
 `demo_simulation.py` runs deterministically with `seed=42`, `num_rounds=100`, `num_agents=8`, `k_owners=2`, `lambda_scale=2.5`, `audit_rate=0.2`, `staleness_rho=0.3`, and `Rule=CONJUNCTIVE`. Both **Mode 1 (`dynamic_mode=False`, static types)** and **Mode 2 (`dynamic_mode=True`, workload fatigue & credit EMA)** are supported via `run_experiment(...)`.
 
+## E2: LLM evidence comparison
+
+The `feat/llm-evidence-experiment` branch extends the grounded Django replay with a
+paired lexical-versus-semantic evidence comparison. Live extraction requires
+`OPENAI_API_KEY` for an OpenAI-compatible endpoint or `GEMINI_API_KEY`/`GOOGLE_API_KEY`
+for Gemini. Set `E2_LLM_MODEL` and optionally `E2_MODEL_CUTOFF` to freeze provider
+identity and contamination metadata.
+
+Semantic extraction is restricted to each module's pre-fix source snapshot. Every
+finding must survive file/line/snippet validation, and extraction failures are
+recorded explicitly. Set `E2_LLM_PROVIDER` to `gemini` or `openai` when both
+provider keys are configured. The replay fits separate predictors and calibration
+maps on the same chronological E1 partitions and compares them under matched
+policies and seeds. The exploratory default selects the first 50 issues from each
+frozen E1 partition; the cohort manifest records the exact IDs.
+
+```bash
+python -m src.e2.extract results/inputs results/django.git --max-issues 50 --split train
+python -m src.e2.extract results/inputs results/django.git --max-issues 50 --split validation
+python -m src.e2.extract results/inputs results/django.git --max-issues 50 --split test
+python -m src.e2.replay results/inputs results/e2 --issues-per-split 50
+pytest tests/test_e2.py -q
+```
+
 ## Historical issue experiment
 
 The [grounded replay report](reports/e1/REPORT.md) gives the results, uncertainty and limitations. The [reproduction guide](reports/e1/REPRODUCE.md) covers setup, verification and the complete run.
