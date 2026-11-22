@@ -63,7 +63,8 @@ def fit_strategy(p, y, degree, prior, c, seed, start=0):
     thresholds = np.median(p, axis=0)
     types, checked, exposed = population(seed, n, c.phi, m)
     info = information(p, thresholds, types)
-    target = y @ BITS
+    bits = 1 << np.arange(m)
+    target = y @ bits
     counts = np.array([int(k).bit_count() for k in range(1 << m)])
     policy = np.full((m, 4), start, dtype=int)
     actions = np.arange(2 * ACTIONS) if c.audit else np.arange(ACTIONS)
@@ -80,7 +81,7 @@ def fit_strategy(p, y, degree, prior, c, seed, start=0):
         q = (actions[:, None] >= ACTIONS) * c.audit * (1 - (1 - c.delta) ** degree[:, i])
 
         def payoff(mask):
-            assigned = (mask & BITS[i]) > 0
+            assigned = (mask & bits[i]) > 0
             utility = -float(c.ell) * types[:, i] * assigned
             covered = (mask & target) == target
             if c.credit == "equal":

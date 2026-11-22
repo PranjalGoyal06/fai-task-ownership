@@ -26,11 +26,12 @@ def words(text):
 
 class Snapshot:
     def __init__(self, repository):
-        self.git = ["git", "--git-dir=" + str(repository)]
+        self.git = ["git", "--no-lazy-fetch", "--git-dir=" + str(repository)]
         self.batch = subprocess.Popen(self.git + ["cat-file", "--batch"],
                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
     def close(self):
+        self.parse.cache_clear()
         self.batch.stdin.close()
         self.batch.wait()
         self.batch.stdout.close()
@@ -66,34 +67,39 @@ class Snapshot:
                 imports.extend((parent, alias.name, node.lineno) for alias in node.names)
         return terms, names, imports, 0
 
-    def evidence(self, issue):
+    def files(self, ref, root):
+        tree = subprocess.check_output(self.git + ["ls-tree", "-r", ref, root]).decode()
+        for line in tree.splitlines():
+            meta, path = line.split("\t", 1)
+            yield meta.split()[2], path
+
+    def evidence(self, issue, *, root="django", modules=MODULES, owner=module, mentions=None, import_path=lambda p: p):
         ref, text = issue["base"], issue["text"]
         terms, exact = words(text), set(WORD.findall(text))
-        fields = [[0., 0., 0., 0.] for _ in MODULES]
+        fields = [[0., 0., 0., 0.] for _ in modules]
         citations, edges = {}, {}
         failures = 0
-        tree = subprocess.check_output(self.git + ["ls-tree", "-r", ref, "django"]).decode()
-        files = [line.split("\t", 1) for line in tree.splitlines()]
-        packages = {path[:-3].removesuffix("/__init__").replace("/", "."): module(path)
-                    for _, path in files if module(path) is not None}
-        for meta, path in files:
-            i = module(path)
+        files = list(self.files(ref, root))
+        packages = {import_path(path)[:-3].removesuffix("/__init__").replace("/", "."): owner(path)
+                    for _, path in files if owner(path) is not None}
+        for oid, path in files:
+            i = owner(path)
             if i is None:
                 continue
-            terms_local, names, imports, failure = self.parse(meta.split()[2])
+            terms_local, names, imports, failure = self.parse(oid)
             failures += failure
             hits = sorted(exact.intersection(names) - {"__init__", "get", "set"})
-            path_hit = path in text or path[:-3].replace("/", ".") in text
+            path_hit = path in text or import_path(path)[:-3].replace("/", ".") in text
             lexical = len(terms & terms_local) / max(1, len(terms | terms_local)) ** 0.5
             f = fields[i]
             f[0] = max(f[0], lexical)
             f[1] = max(f[1], len(hits))
             f[2] += int(path_hit)
-            prefix = MODULES[i]
-            f[3] = float(prefix != "other" and prefix.replace("/", ".") in text.lower())
+            prefixes = mentions[i] if mentions is not None else [modules[i]]
+            f[3] = float(any(p != "other" and p.replace("/", ".") in text.lower() for p in prefixes))
             if path_hit or hits:
                 citations.setdefault(i, []).append([path, hits[:3], [names[n] for n in hits[:3]]])
-            package = path.rpartition("/")[0].replace("/", ".")
+            package = import_path(path).rpartition("/")[0].replace("/", ".")
             for parent, name, lineno in imports:
                 try:
                     absolute = importlib.util.resolve_name(parent, package)

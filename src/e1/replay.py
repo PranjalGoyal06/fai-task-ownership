@@ -14,22 +14,23 @@ from src.mechanisms import AssignmentMechanism
 from src.types import CreditRule, MechanismConfig, ResolutionRule, Task
 
 SEED = 331
-COUNTS = np.array([i.bit_count() for i in range(1 << len(MODULES))])
 
 
 def comparators(cases, subset, reward):
     local = cases.local[subset]
+    count = local.shape[1]
     votes = []
-    for i in range(len(MODULES)):
+    for i in range(count):
         public = np.tile(cases.prior, (len(local), 1))
         public[:, i] = local[:, i]
         votes.append(public.argmax(axis=1))
-    tally = (np.eye(len(MODULES))[votes]).sum(axis=0)
-    masks = np.arange(len(COUNTS))
+    tally = np.eye(count)[votes].sum(axis=0)
+    masks = np.arange(1 << count)
+    costs = np.array([i.bit_count() for i in range(1 << count)])
     known = cases.joint_masks[subset, :, None]
     covered = (masks & known) == known
-    objective = reward * (cases.joint_weights[subset, :, None] * covered).sum(axis=1) - COUNTS
-    return {"B1": select(cases.descriptions[subset], reward), "B3": BITS[tally.argmax(axis=1)],
+    objective = reward * (cases.joint_weights[subset, :, None] * covered).sum(axis=1) - costs
+    return {"B1": select(cases.descriptions[subset], reward), "B3": 1 << tally.argmax(axis=1),
             "B4": objective.argmax(axis=1), "central": select(cases.central[subset], reward)}
 
 
@@ -62,17 +63,19 @@ def decisions(cases, mask, c, policy, thresholds, seed):
 
 
 def settle(ids, y, chosen, b4, reward):
-    targets = y @ BITS
+    count = y.shape[1]
+    sizes = np.array([i.bit_count() for i in range(1 << count)])
+    targets = y @ (1 << np.arange(count))
     covered = (chosen & targets) == targets
     oracle_covered = (b4 & targets) == targets
-    size = COUNTS[chosen]
-    extra = COUNTS[chosen & ~targets]
+    size = sizes[chosen]
+    extra = sizes[chosen & ~targets]
     miss = reward * (oracle_covered.astype(float) - covered)
-    excess = size - COUNTS[b4]
-    return pd.DataFrame(dict(issue=ids, owners=targets, k=COUNTS[targets], assigned=chosen,
+    excess = size - sizes[b4]
+    return pd.DataFrame(dict(issue=ids, owners=targets, k=sizes[targets], assigned=chosen,
                              coverage=covered.astype(int), padding=extra, any_padding=extra > 0,
                              welfare=reward * covered - size, miss_loss=miss, excess_cost=excess,
-                             gap=miss + excess, messages=len(MODULES)))
+                             gap=miss + excess, messages=count))
 
 
 def run(directory, output):

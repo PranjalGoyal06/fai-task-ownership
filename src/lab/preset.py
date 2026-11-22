@@ -1,4 +1,4 @@
-"""Load the verified, offline nine-module Django preset in manifest order."""
+"""Load the published Django replay or a locally trained repository run in manifest order."""
 import gzip
 import hashlib
 import io
@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass
-class DjangoPreset:
+class ReplayPreset:
     digest: str
     manifest: dict
     prior: np.ndarray
@@ -29,9 +29,13 @@ class DjangoPreset:
     outcomes: np.ndarray
     pooled_assignments: dict[int, np.ndarray]
     methods: pd.DataFrame
+    inputs_path: Path | None = None
 
 
-def load_preset(root: Path = ROOT) -> DjangoPreset:
+DjangoPreset = ReplayPreset
+
+
+def load_preset(root: Path = ROOT) -> ReplayPreset:
     reports = root / "reports/e1"
     raw = (root / "presets/django/replay-inputs.json.gz").read_bytes()
     extra = json.loads(gzip.decompress(raw))
@@ -75,7 +79,7 @@ def load_preset(root: Path = ROOT) -> DjangoPreset:
         raise ValueError("Pooled benchmarks differ from the held-out issue order")
     pooled = {int(reward): np.asarray(masks) for reward, masks in extra["pooled"].items()}
     earlier = [extra["validation"][key] for key in validation.index]
-    return DjangoPreset(
+    return ReplayPreset(
         digest=hashlib.sha256(raw).hexdigest(), manifest=manifest, prior=np.array(extra["prior"]),
         validation_beliefs=np.array([row["beliefs"] for row in earlier]),
         validation_degree=np.array([row["degree"] for row in earlier]),
@@ -83,3 +87,18 @@ def load_preset(root: Path = ROOT) -> DjangoPreset:
         issues=issues, beliefs=matrix("local").to_numpy(), degrees=np.array(degrees),
         snapshots=snapshots, outcomes=matrix("outcome").to_numpy(dtype=int),
         pooled_assignments=pooled, methods=read_table("methods.csv"))
+
+
+def load_prepared(path: Path) -> ReplayPreset:
+    """Restore generated numeric inputs without executing serialized model code."""
+    raw = path.read_bytes()
+    data = json.loads(gzip.decompress(raw))
+    if data.get("format") != 1:
+        raise ValueError("Unsupported prepared run format")
+    arrays = {name: np.asarray(data[name]) for name in (
+        "prior", "validation_beliefs", "validation_degree", "validation_outcomes",
+        "beliefs", "degrees", "outcomes")}
+    return ReplayPreset(digest=hashlib.sha256(raw).hexdigest(), manifest=data["manifest"],
+                        issues=pd.DataFrame(data["issues"]).set_index("id"), snapshots=data["snapshots"],
+                        pooled_assignments={int(k): np.array(v) for k, v in data["pooled"].items()},
+                        methods=pd.DataFrame(), inputs_path=path, **arrays)

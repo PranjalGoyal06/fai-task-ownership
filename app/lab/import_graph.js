@@ -9,7 +9,8 @@ export default function render({parentElement, data}) {
         parent.append(element);
         return element;
     }
-    const diagram = svg("svg", {viewBox: "0 0 610 320", role: "group",
+    const labelMargin = Math.max(0, ...data.nodes.map(n => n.name.length * 8 - 90));
+    const diagram = svg("svg", {viewBox: `${-labelMargin} 0 ${610 + 2 * labelMargin} 320`, role: "group",
         "aria-label": "Directed module import graph"}, root);
     const defs = svg("defs", {}, diagram);
     for (const [id, color] of [["idle", "#80949e"], ["active", "#087778"]]) {

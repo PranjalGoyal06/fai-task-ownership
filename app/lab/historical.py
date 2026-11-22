@@ -1,4 +1,4 @@
-"""Streamlit presentation for the frozen Django experiment."""
+"""Inspect and compare policies on frozen historical replay inputs."""
 from dataclasses import asdict
 from pathlib import Path
 import json
@@ -6,10 +6,9 @@ import json
 import pandas as pd
 import streamlit as st
 
-from src.e1.dataset import MODULES
 from src.lab.analysis import compare
-from src.lab.imports import import_graph
-from src.lab.preset import load_preset
+from src.lab_ui.graph import graph
+from src.lab.preset import load_prepared, load_preset
 from src.lab.replay import Settings, export, read_recipe, recipe, replay
 
 
@@ -19,12 +18,13 @@ def run_cached(digest, settings, _preset):
 
 
 def configure(preset):
-    active = st.session_state.get("historical_run", Settings())
+    count_agents = len(preset.manifest["modules"])
+    active = st.session_state.get("historical_run", Settings(strategic_agents=round(count_agents * 2 / 3)))
     with st.form("historical_parameters"):
         scale = st.number_input("Scoring strength", min_value=0., value=float(active.scoring), step=.5,
                                 help="Higher values give agents a stronger reward for accurate probabilities.")
         with st.expander("Advanced settings"):
-            count = st.slider("Agents with a private incentive", 0, 9, active.strategic_agents)
+            count = st.slider("Agents with a private incentive", 0, count_agents, active.strategic_agents)
             cost = st.number_input("Private cost of assignment", value=float(active.private_cost), step=.25,
                                    help="A negative cost rewards the agent for being assigned.")
             audit = st.slider("Chance of an audit", 0., 1., float(active.audit), step=.05)
@@ -78,32 +78,9 @@ def comparison_view(run, polling, ids):
                "Incentive cost counts centered score payments and expected audit spending separately from welfare.")
 
 
-ASSETS = Path(__file__).parent
-render_graph = st.components.v2.component(
-    "ownership_import_graph",
-    html='<div class="imports"></div>',
-    css=(ASSETS / "import_graph.css").read_text(),
-    js=(ASSETS / "import_graph.js").read_text(),
-)
-
-
-def graph(preset, key, frame=None):
-    snapshot = preset.snapshots[key]
-    assigned = [] if frame is None else frame.index[frame.assigned]
-    owners = [] if frame is None else frame.index[frame.patch_owner]
-    data = import_graph(preset.manifest["modules"], snapshot, preset.manifest["repository"], assigned, owners)
-    st.subheader("Project import graph")
-    st.caption("An arrow points to the imported module. A double arrow means both modules import each other.")
-    if frame is not None:
-        st.caption("Teal fill = assigned by the selected policy · diamond = changed in the patch.")
-    render_graph(data=data, key="historical-import-graph")
-    st.caption(f"Pre-fix revision `{snapshot['base'][:12]}` · {len(data['nodes'])} modules · "
-               f"{len(snapshot['edges'])} directed imports")
-
-
-def evidence(snapshot, frame):
-    module = st.selectbox("Inspect local evidence for module", MODULES)
-    idx = MODULES.index(module)
+def evidence(snapshot, frame, modules, repository):
+    module = st.selectbox("Inspect local evidence for module", modules)
+    idx = modules.index(module)
     overlap, symbols, paths, mentioned = snapshot["features"][idx]
     st.write(f"The local model estimated **{frame.at[module, 'belief']:.1%}** ownership. "
              "It used four measurements from this module at the pre-fix revision.")
@@ -116,7 +93,7 @@ def evidence(snapshot, frame):
     if citations:
         st.caption("Up to three matching files from the extractor. A matching name shows lexical overlap.")
         for path, names, lines in citations:
-            url = f"https://github.com/django/django/blob/{snapshot['base']}/{path}"
+            url = f"https://github.com/{repository}/blob/{snapshot['base']}/{path}"
             if lines:
                 url += f"#L{lines[0]}"
             st.markdown(f"[{path}]({url})" + (" · " + ", ".join(names) if names else ""))
@@ -175,7 +152,7 @@ def overview(preset):
             st.button("Inspect a fix", type="primary", on_click=open_inspector, args=(Settings(), "All fixes"))
             st.button("Change the experiment", on_click=switch_view, args=("experiment",))
     with diagram:
-        graph(preset, preset.issues.index[0])
+        graph(preset.snapshots[preset.issues.index[0]], preset.manifest["modules"], preset.manifest["repository"])
 
 
 def inspector(preset):
@@ -185,7 +162,8 @@ def inspector(preset):
     ids = issue_ids(run, subset)
     selected, base = run.issues.loc[ids], polling.issues.loc[ids]
     st.title("Inspect a fix")
-    st.caption(f"Django · {subset} · Scoring strength {settings.scoring:g}")
+    repository = preset.manifest["repository"]
+    st.caption(f"{repository} · {subset} · Scoring strength {settings.scoring:g}")
     solver_warnings(run, polling)
     gained = selected.coverage > base.coverage
     lost = selected.coverage < base.coverage
@@ -199,7 +177,12 @@ def inspector(preset):
     before, after = polling.agents.loc[key], run.agents.loc[key]
     title = preset.issues.at[key, "title"]
     st.subheader(title)
-    st.caption(f"[Resolving pull request](https://github.com/django/django/pull/{key.rsplit('-', 1)[1]})")
+    pr = key.rsplit("-", 1)[1]
+    links = f"[Resolving pull request](https://github.com/{repository}/pull/{pr})"
+    if "issue" in preset.issues:
+        number = preset.issues.at[key, "issue"]
+        links += f" · [Original issue](https://github.com/{repository}/issues/{number})"
+    st.caption(links)
     outcomes = ["missed", "covered"]
     st.write(f"Polling **{outcomes[int(base.at[key, 'coverage'])]}** this fix with "
              f"{int(base.at[key, 'assignments'])} assignments. The selected policy "
@@ -210,9 +193,11 @@ def inspector(preset):
                            "Selected report": after.report, "Polling assigned": before.assigned,
                            "Selected assigned": after.assigned, "Patch owner": after.patch_owner})
     st.dataframe(ledger.style.format({name: "{:.1%}" for name in ledger.columns[:3]}), width="stretch")
-    graph(preset, key, after)
+    if "roots" in preset.manifest:
+        st.caption("The graph shows imports resolved within eligible Python source at this pre-fix revision.")
+    graph(preset.snapshots[key], preset.manifest["modules"], repository, after)
     with st.expander("Evidence, audits and payouts"):
-        evidence(preset.snapshots[key], after)
+        evidence(preset.snapshots[key], after, preset.manifest["modules"], repository)
         st.dataframe(after[["private_cost", "altered_payload", "audited", "contradicted",
                             "selection_input", "score", "credit"]], width="stretch")
     st.button("Change the experiment", on_click=switch_view, args=("experiment",))
@@ -220,14 +205,18 @@ def inspector(preset):
 
 def experiment(preset):
     st.title("Change the experiment")
+    st.caption(preset.manifest["repository"])
     st.write("Try changing the reward for an accurate report. Each run compares your settings with "
              "polling on the same fixes, with the same private incentives.")
     settings = configure(preset)
     run, polling = paired_runs(preset, settings)
     solver_warnings(run, polling)
     st.subheader("Replay results")
+    if "roots" in preset.manifest:
+        st.caption("Results cover eligible production Python fixes in the selected roots.")
     st.caption(f"Applied scoring {settings.scoring:g} · {settings.strategic_agents} agents with a private incentive")
-    slice_name = st.radio("Compare fixes", ["All fixes", "Single-module", "Multi-module"], horizontal=True)
+    slices = [label for label in ("All fixes", "Single-module", "Multi-module") if len(issue_ids(run, label))]
+    slice_name = st.radio("Compare fixes", slices, horizontal=True)
     comparison_view(run, polling, issue_ids(run, slice_name))
     st.button("Inspect a fix", on_click=open_inspector, args=(settings, slice_name))
     with st.expander("Applied settings and solver details"):
@@ -235,14 +224,15 @@ def experiment(preset):
         for name, result in [("Selected policy", run), ("Polling", polling)]:
             if result.diagnostic["status"] == "converged":
                 diagnostics(result, name)
-    with st.expander("Published benchmarks"):
-        st.write("Published results at reward 8 on this slice. The pooled benchmark estimates likely owner sets from earlier "
-                 "fixes and pooled pre-fix evidence. A fix counts as covered when every changed module is assigned.")
-        labels = {"B4": "Pooled benchmark", "central": "Issue-text classifier", "B1": "Description router", "B3": "Voting"}
-        subset = {"All fixes": "all", "Single-module": "single", "Multi-module": "multi"}[slice_name]
-        rows = preset.methods[preset.methods.config.isin(labels) & (preset.methods["slice"] == subset)]
-        st.dataframe(rows.assign(Method=rows.config.map(labels)).set_index("Method")
-                     [["n", "coverage", "padding", "welfare"]], width="stretch")
+    if not preset.methods.empty:
+        with st.expander("Published benchmarks"):
+            st.write("Published results at reward 8 on this slice. The pooled benchmark estimates likely owner sets from earlier "
+                     "fixes and pooled pre-fix evidence. A fix counts as covered when every changed module is assigned.")
+            labels = {"B4": "Pooled benchmark", "central": "Issue-text classifier", "B1": "Description router", "B3": "Voting"}
+            subset = {"All fixes": "all", "Single-module": "single", "Multi-module": "multi"}[slice_name]
+            rows = preset.methods[preset.methods.config.isin(labels) & (preset.methods["slice"] == subset)]
+            st.dataframe(rows.assign(Method=rows.config.map(labels)).set_index("Method")
+                         [["n", "coverage", "padding", "welfare"]], width="stretch")
     with st.expander("Reproduce this run"):
         st.write("The export includes the applied settings, input digest, solver status, issue totals and "
                  "agent reports for both policies across the full held-out set.")
@@ -250,21 +240,26 @@ def experiment(preset):
         st.download_button("Download settings", data=json.dumps(recipe(preset, settings), indent=2),
                            file_name="recipe.json", mime="application/json")
         st.download_button("Download replay ZIP", data=export(preset, run, polling),
-                           file_name="django-replay.zip", mime="application/zip")
-
+                           file_name=preset.manifest["repository"].split("/")[-1] + "-replay.zip", mime="application/zip")
 
 
 def main():
     try:
-        preset = load_preset()
+        prepared = st.session_state.get("active_prepared_path")
+        preset = load_prepared(Path(prepared)) if prepared else load_preset()
     except (ValueError, OSError, KeyError) as error:
-        st.error(f"Could not load the Django preset. Check the preset and report files. {error}")
+        st.error(f"Could not load the replay. Check the preset and report files. {error}")
         return
-    view = st.session_state.get("historical_view", "overview")
+    if prepared and st.button("Open published Django replay"):
+        for key in ("active_prepared_path", "historical_run", "historical_view", "inspection_settings", "inspection_subset"):
+            st.session_state.pop(key, None)
+        st.rerun()
+    view = st.session_state.get("historical_view", "experiment" if prepared else "overview")
     if view == "overview":
         overview(preset)
         return
-    st.button("← Published replay", on_click=switch_view, args=("overview",))
+    if not prepared:
+        st.button("← Published replay", on_click=switch_view, args=("overview",))
     if view == "inspect":
         inspector(preset)
     else:

@@ -96,6 +96,56 @@ cmp results/replay-inputs.json.gz presets/django/replay-inputs.json.gz
 
 See the [lab progress log](LAB_PROGRESS.md) for verification and the next milestone.
 
+### Run E1 on a public Python repository
+
+Open **New repository experiment**, enter a GitHub repository URL and choose the merge dates. New scans use the GitHub CLI (`gh`) with authenticated public read access. The initial check reads file metadata and pins a revision. Confirm the production roots and review the estimated Git history size and available storage. For repositories that fit, checking history acquires one compressed bare clone without a working checkout. Larger repositories use shallow pre-fix trees and bulk Git packs of the required file versions. GitHub supplies issue and pull request metadata. Estimates can differ from actual disk use. The lab monitors transfers against the repository, cache and free-space limits. Completed Git objects and older per-file caches are reusable.
+
+The generic scan supports flat modules, packages and `src/` layouts. Repositories with eligible production Python can also contain compiled extensions or other languages. Setup warns about those files and excludes any fix that changes unsupported production source, including fixes that also change Python. The exclusion table lists the affected pull requests. Replay results cover eligible Python fixes, and the graph resolves imports within the selected Python source. The scan recognizes tests, documentation and packaging files by paths and names. It also excludes changes with unverifiable patch paths, ambiguous issue links or unavailable issue text. An incomplete GitHub tree or an exhausted quota interrupts the scan. Retry the same URL and dates to reuse completed batches.
+
+The initial ownership map comes from directories and filenames in the earliest usable pre-fix tree. Review per-rule file counts before accepting. A rule that first matches later in the history is allowed. A rule that never owns an eligible file is flagged. The timeline, training results, directed import graph, inspector and ZIP export use the same E1 engine as the curated experiments. **Open a saved experiment** reopens trained results offline.
+
+| Storage setting | Default | Environment override in MiB |
+| --- | ---: | --- |
+| Production source in one snapshot | 100 MiB | `LAB_SNAPSHOT_MIB` |
+| Local data for one repository | 512 MiB | `LAB_REPOSITORY_MIB` |
+| Total lab cache | 2 GiB | `LAB_TOTAL_MIB` |
+| Disk space kept free | 2 GiB | `LAB_RESERVE_MIB` |
+
+The lab checks space again under a shared write lock before publishing each cached file. Generic data lives under `results/repositories/`. The total budget also counts existing scikit-learn caches. **Manage downloaded data** removes a repository’s downloaded objects, scan metadata and extracted evidence while keeping its prepared replay inputs.
+
+For a headless run, the first command prints the history estimate and available budget. Add `--prepare` to acquire history and print the scan path, then pass that path to training and the resulting inputs path to replay.
+
+```sh
+python -m src.lab.repository https://github.com/OWNER/PROJECT --start 2025-01-01 --end 2025-12-31
+python -m src.lab.repository https://github.com/OWNER/PROJECT --start 2025-01-01 --end 2025-12-31 --prepare
+python -m src.lab.training --scan SCAN_PATH
+python -m src.lab.replay --inputs INPUTS_PATH --output results/experiment.zip
+```
+
+### Run the scikit-learn pilot
+
+Choose **Review scikit-learn pilot** in setup to revisit its cached 2022 scan, or **Open a saved experiment** to open a trained replay. The pilot retains its original seven-group suggestion and mixed-patch policy. Its separate reproduction commands below use Git, the GitHub CLI and an ignored cache under `results/sklearn-2022/`.
+
+1. **Review suitability.** The lab scans PRs merged in 2022. Each retained fix has one explicit link to a same-repository issue, a pre-fix source revision and a verified production Python change. Changed Python files stand in for the owners needed to resolve an issue. Mixed patches can also change compiled code outside that measure.
+2. **Define agents.** Edit the names and production paths in the ownership table. A specific file or folder overrides its parent. The preview shows the resulting file owners, an actual patch and its pre-fix imports. A fix with an unmapped eligible path is excluded in full.
+3. **Choose dates.** The proposed dates aim for a 60/20/20 split. The replay time is the later of issue creation and the first parent’s commit time. Issues with observed edits after that time are excluded. GitHub’s current issue record does not reconstruct every historical title. A training fix must merge before validation starts, and a validation fix must merge before evaluation starts. Repeated issue IDs, merge revisions and identical normalized report texts are excluded.
+4. **Train models** to see example counts, probability errors and any fallback for each agent. **Open reporting game** compares policies using the saved probabilities. Changing the ownership map requires retraining. Changing scoring reuses the trained inputs.
+
+To prepare the same suggested map and dates without the UI, run these commands from the worktree root. Both commands accept `--cache DIRECTORY`. Training also accepts `--map owners.json` (a list of objects with `name` and `paths`) and `--cutoffs YYYY-MM-DD YYYY-MM-DD` for the starts of validation and evaluation. Intake accepts `--cross-check PATH` to compare a local SWE-bench parquet against the finished scan.
+
+```sh
+python -m src.lab.intake
+python -m src.lab.training
+```
+
+The training command prints the path to `inputs.json.gz`. Pass it to `python -m src.lab.replay --inputs PATH --output experiment.zip` to export the default comparison. To reproduce an exported scikit-learn run offline in the same software environment, extract its frozen inputs and settings and compare the complete output.
+
+```sh
+unzip -o experiment.zip inputs.json.gz recipe.json -d results/reproduction
+python -m src.lab.replay --inputs results/reproduction/inputs.json.gz --recipe results/reproduction/recipe.json --output results/reproduction/replayed.zip
+cmp experiment.zip results/reproduction/replayed.zip
+```
+
 ## Running the Interactive Streamlit UI
 
 Launch the interactive web application to tune all system constants, test benchmarks, inspect module topologies, step through individual task rounds, and run live sensitivity sweeps:

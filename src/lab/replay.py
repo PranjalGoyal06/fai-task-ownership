@@ -1,6 +1,7 @@
 """Fit a reporting policy on earlier cases, replay it, then reveal the patch for settlement."""
 import argparse
 import io
+import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass, replace
@@ -11,10 +12,10 @@ import numpy as np
 import pandas as pd
 
 from src.e1.dataset import MODULES
-from src.e1.game import ACTIONS, BITS, Condition, fit_strategy, information, population, select, submit
+from src.e1.game import ACTIONS, Condition, fit_strategy, information, population, select, submit
 from src.e1.replay import SEED, settle
 from src.lab.analysis import compare
-from src.lab.preset import DjangoPreset, load_preset
+from src.lab.preset import ReplayPreset, load_prepared, load_preset
 from src.mechanisms import AssignmentMechanism
 from src.types import CreditRule, MechanismConfig, ResolutionRule, Task
 
@@ -31,9 +32,9 @@ class Settings:
     detection: float = .4
     fine: float = 2.
 
-    def condition(self):
-        if type(self.strategic_agents) is not int or not 0 <= self.strategic_agents <= len(MODULES):
-            raise ValueError("Choose a whole number of strategic agents from zero to nine")
+    def condition(self, count=len(MODULES)):
+        if type(self.strategic_agents) is not int or not 0 <= self.strategic_agents <= count:
+            raise ValueError(f"Choose a whole number of strategic agents from zero to {count}")
         if self.credit not in ("off", "equal", "shapley"):
             raise ValueError("Unknown credit rule")
         numbers = (self.audit, self.private_cost, self.scoring, self.detection, self.fine)
@@ -47,7 +48,7 @@ class Settings:
             raise ValueError("Invalid resolution reward, detection probability or fine")
         return Condition(
             reward=self.reward, delta=self.detection, fine=self.fine, ell=self.private_cost,
-            phi=self.strategic_agents / len(MODULES), scale=self.scoring, audit=self.audit,
+            phi=self.strategic_agents / count, scale=self.scoring, audit=self.audit,
             credit=self.credit,
         )
 
@@ -63,17 +64,19 @@ class Run:
     agents: pd.DataFrame
 
 
-def replay(preset: DjangoPreset, settings: Settings) -> Run:
-    c = settings.condition()
+def replay(preset: ReplayPreset, settings: Settings) -> Run:
+    modules = preset.manifest["modules"]
+    count = len(modules)
+    c = settings.condition(count)
     policy, thresholds, diagnostic = fit_strategy(preset.validation_beliefs, preset.validation_outcomes,
                                                  preset.validation_degree, preset.prior, c, settings.seed)
     beliefs = preset.beliefs
-    types, checks, exposure = population(settings.seed + 1, len(beliefs), c.phi, len(MODULES))
+    types, checks, exposure = population(settings.seed + 1, len(beliefs), c.phi, count)
     info = information(beliefs, thresholds, types)
     reports, effective, caught = submit(policy, beliefs, info, (checks, exposure), preset.degrees,
                                         preset.prior, c)
     assigned = select(effective, c.reward)
-    selected = (assigned[:, None] & BITS) != 0
+    selected = (assigned[:, None] & (1 << np.arange(count))) != 0
 
     # Held-out labels enter only after all assignment decisions have been made.
     y = preset.outcomes
@@ -85,12 +88,12 @@ def replay(preset: DjangoPreset, settings: Settings) -> Run:
     if c.credit != "off":
         for i, outcome in enumerate(y):
             task = Task(i, np.array([]), -1, set(np.flatnonzero(outcome)), outcome, c.reward,
-                        np.ones(len(MODULES)), ResolutionRule.CONJUNCTIVE)
+                        np.ones(count), ResolutionRule.CONJUNCTIVE)
             for agent, value in mechanism.divide_credit(task, set(np.flatnonzero(selected[i]))).items():
                 payouts[i, agent] = value
     scores = c.scale * np.vectorize(mechanism.centered_brier_score)(reports, y, preset.prior)
     issues["score"] = scores.sum(axis=1)
-    issues["incentive_cost"] = issues.score + c.audit_cost * c.audit * len(MODULES)
+    issues["incentive_cost"] = issues.score + c.audit_cost * c.audit * count
     issues["credit_paid"] = payouts.sum(axis=1)
     issues["fines"] = c.fine * caught.sum(axis=1)
     issues["assignments"] = selected.sum(axis=1)
@@ -98,16 +101,16 @@ def replay(preset: DjangoPreset, settings: Settings) -> Run:
     issues["messages"] += (2 * audited * preset.degrees).sum(axis=1)
     agents = pd.DataFrame({
         "private_cost": (c.ell * types).ravel(), "belief": beliefs.ravel(), "report": reports.ravel(),
-        "altered_payload": (policy[np.arange(len(MODULES)), info] >= ACTIONS).ravel(),
+        "altered_payload": (policy[np.arange(count), info] >= ACTIONS).ravel(),
         "audited": audited.ravel(), "contradicted": caught.ravel(), "selection_input": effective.ravel(),
         "assigned": selected.ravel(), "patch_owner": y.astype(bool).ravel(),
         "score": scores.ravel(), "credit": payouts.ravel(),
-    }, index=pd.MultiIndex.from_product([issues.index, MODULES], names=["issue", "module"]))
+    }, index=pd.MultiIndex.from_product([issues.index, modules], names=["issue", "module"]))
     return Run(settings, diagnostic, issues, agents)
 
 
 def recipe(preset, settings):
-    return {"version": 1, "preset": "django-e1", "inputs_sha256": preset.digest,
+    return {"version": 1, "preset": preset.manifest.get("preset", "django-e1"), "inputs_sha256": preset.digest,
             "corpus_revision": preset.manifest["revision"], "settings": asdict(settings)}
 
 
@@ -116,7 +119,7 @@ def read_recipe(content, preset):
     if not isinstance(saved, dict) or not isinstance(saved.get("settings"), dict):
         raise ValueError("Expected a lab recipe containing a settings object")
     settings = Settings(**saved["settings"])
-    settings.condition()
+    settings.condition(len(preset.manifest["modules"]))
     if saved != recipe(preset, settings):
         raise ValueError("Recipe version, preset or input digest differs from this checkout")
     return settings
@@ -127,6 +130,11 @@ def export(preset, run, polling):
     with ZipFile(buffer, "w") as archive:
         def add(name, content):
             archive.writestr(ZipInfo(name), content, compress_type=ZIP_DEFLATED)
+        if preset.inputs_path is not None:
+            inputs = preset.inputs_path.read_bytes()
+            if hashlib.sha256(inputs).hexdigest() != preset.digest:
+                raise ValueError("Prepared run changed since loading")
+            add("inputs.json.gz", inputs)
         add("recipe.json", json.dumps(recipe(preset, run.settings), indent=2))
         add("paired-summary.csv", compare(run.issues, polling.issues).totals.to_csv())
         for name, result in [("selected", run), ("polling", polling)]:
@@ -140,9 +148,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--recipe", type=Path, help="Extract recipe.json from a lab export")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--inputs", type=Path, help="Prepared inputs.json.gz from a repository replay")
     args = parser.parse_args()
-    preset = load_preset()
-    settings = read_recipe(args.recipe.read_bytes(), preset) if args.recipe else Settings()
+    preset = load_prepared(args.inputs) if args.inputs else load_preset()
+    settings = read_recipe(args.recipe.read_bytes(), preset) if args.recipe else Settings(strategic_agents=round(2 * len(preset.manifest["modules"]) / 3))
     selected = replay(preset, settings)
     polling = selected if settings == settings.polling() else replay(preset, settings.polling())
     args.output.write_bytes(export(preset, selected, polling))
