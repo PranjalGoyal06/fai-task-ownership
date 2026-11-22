@@ -28,11 +28,11 @@ class SimulationConfig:
 
     # 1. General & Simulation
     num_rounds: int = 100
-    num_agents: int = 12
+    num_agents: int = 10
     seed: int = 42
 
     # 2. Agent Population & Misalignment Regime
-    agent_regime: str = "mixed"  # "mixed", "deflection", "acquisition", "custom"
+    agent_regime: str = "mixed"  # "mixed", "deflection", "acquisition", "aligned", "custom"
     deflector_ratio: float = 0.3
     acquirer_ratio: float = 0.3
     neutral_ratio: float = 0.4
@@ -186,7 +186,7 @@ PARAMETER_METADATA: dict[str, dict[str, str]] = {
         "symbol": "Regime",
         "name": "Misalignment Regime",
         "category": "Population & Misalignment",
-        "desc": "Population distribution type: mixed, deflection-heavy, acquisition-heavy, or custom.",
+        "desc": "Population distribution type: mixed, deflection, acquisition, aligned, or custom.",
     },
     "deflector_ratio": {
         "symbol": "ϕ_defl",
@@ -486,6 +486,8 @@ def init_agent_population(
         n_acquire = num_agents // 2
         n_neutral = num_agents - n_acquire
         ells = [config.acquirer_ell] * n_acquire + [config.neutral_ell] * n_neutral
+    elif config.agent_regime == "aligned":
+        ells = [config.neutral_ell] * num_agents
     elif config.agent_regime == "custom":
         n_deflect = int(round(config.deflector_ratio * num_agents))
         n_acquire = int(round(config.acquirer_ratio * num_agents))

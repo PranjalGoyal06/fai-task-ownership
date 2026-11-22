@@ -133,8 +133,24 @@ def configure_parameters() -> SimulationConfig:
     presets = {
         "Mode 1: Standard Static Benchmark (Demo Default)": {
             "num_rounds": 100,
-            "num_agents": 12,
+            "num_agents": 10,
             "agent_regime": "mixed",
+            "score_scale": 2.5,
+            "audit_rate": 0.2,
+            "audit_penalty": 10.0,
+            "rule": ResolutionRule.CONJUNCTIVE,
+            "use_coalition_range": True,
+            "coalition_min": 1,
+            "coalition_max": 5,
+            "reward_per_owner": 5.0,
+            "dynamic_mode": False,
+            "b1_staleness_rho": 0.3,
+            "seed": 42,
+        },
+        "Fully Aligned Baseline (100% Honest, ℓ = 0)": {
+            "num_rounds": 100,
+            "num_agents": 10,
+            "agent_regime": "aligned",
             "score_scale": 2.5,
             "audit_rate": 0.2,
             "audit_penalty": 10.0,
@@ -149,7 +165,7 @@ def configure_parameters() -> SimulationConfig:
         },
         "Mode 1: High Scoring Incentive (λ = 5.0)": {
             "num_rounds": 100,
-            "num_agents": 12,
+            "num_agents": 10,
             "agent_regime": "mixed",
             "score_scale": 5.0,
             "audit_rate": 0.2,
@@ -165,7 +181,7 @@ def configure_parameters() -> SimulationConfig:
         },
         "Mode 2: Dynamic Learning & Workload Fatigue": {
             "num_rounds": 100,
-            "num_agents": 12,
+            "num_agents": 10,
             "agent_regime": "mixed",
             "score_scale": 2.5,
             "audit_rate": 0.2,
@@ -184,7 +200,7 @@ def configure_parameters() -> SimulationConfig:
         },
         "Deflection Crisis (All Agents Deflect ℓ = +2.0)": {
             "num_rounds": 100,
-            "num_agents": 12,
+            "num_agents": 10,
             "agent_regime": "deflection",
             "score_scale": 2.5,
             "audit_rate": 0.2,
@@ -200,7 +216,7 @@ def configure_parameters() -> SimulationConfig:
         },
         "Acquisition Hoarding (All Agents Acquire ℓ = -2.0)": {
             "num_rounds": 100,
-            "num_agents": 12,
+            "num_agents": 10,
             "agent_regime": "acquisition",
             "score_scale": 2.5,
             "audit_rate": 0.2,
@@ -216,7 +232,7 @@ def configure_parameters() -> SimulationConfig:
         },
         "Stale Description Stress Test (ρ = 0.7)": {
             "num_rounds": 100,
-            "num_agents": 12,
+            "num_agents": 10,
             "agent_regime": "mixed",
             "score_scale": 2.5,
             "audit_rate": 0.2,
@@ -250,11 +266,12 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         num_rounds = st.slider(
-            "Rounds (T)",
+            "Simulation Rounds (T)",
             min_value=10,
             max_value=1000,
             value=p_dict.get("num_rounds", 100),
             step=10,
+            help="Total sequential task arrival rounds to simulate (10–1000).",
         )
 
         st.markdown(
@@ -262,38 +279,64 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         num_agents = st.slider(
-            "Agents (N)",
-            min_value=4,
-            max_value=100,
-            value=p_dict.get("num_agents", 12),
+            "Candidate Agents (N)",
+            min_value=1,
+            max_value=25,
+            value=p_dict.get("num_agents", 10),
             step=1,
-            help="Above 14 agents, assignment search uses the greedy marginal method instead of exact combinatorial search.",
+            help="Total candidate owners in the system (1–25, default 10). For N <= 14, exact combinatorial search is used.",
         )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['agent_regime']['symbol']}</b>: {PARAMETER_METADATA['agent_regime']['desc']}</div>",
             unsafe_allow_html=True,
         )
+        REGIME_OPTIONS = ["mixed", "deflection", "acquisition", "aligned", "custom"]
+        REGIME_LABELS = {
+            "mixed": "Mixed (30% Deflect, 30% Acquire, 40% Aligned)",
+            "deflection": "Deflection Crisis (50% Deflect, 50% Aligned)",
+            "acquisition": "Acquisition Hoarding (50% Acquire, 50% Aligned)",
+            "aligned": "Fully Aligned / Honest (100% Aligned, ℓ = 0)",
+            "custom": "Custom Proportions (Manual Sliders)",
+        }
+        selected_regime = p_dict.get("agent_regime", "mixed")
+        if selected_regime not in REGIME_OPTIONS:
+            selected_regime = "mixed"
+
         agent_regime = st.selectbox(
-            "Agent Regime",
-            ["mixed", "deflection", "acquisition", "custom"],
-            index=["mixed", "deflection", "acquisition", "custom"].index(
-                p_dict.get("agent_regime", "mixed")
-            ),
-            help="Mixed: 30% deflectors, 30% acquirers, 40% neutral. Deflection: 50% deflectors, 50% neutral. Acquisition: 50% acquirers, 50% neutral.",
+            "Agent Misalignment Regime",
+            REGIME_OPTIONS,
+            index=REGIME_OPTIONS.index(selected_regime),
+            format_func=lambda k: REGIME_LABELS[k],
+            help="Defines the strategic composition and incentives of candidate agents in the system.",
         )
-        if agent_regime == "mixed":
-            st.caption("30% deflectors | 30% acquirers | 40% neutral")
-        elif agent_regime == "deflection":
-            st.caption("50% deflectors | 50% neutral; no acquirers")
-        elif agent_regime == "acquisition":
-            st.caption("50% acquirers | 50% neutral; no deflectors")
+
+        REGIME_EXPLANATIONS = {
+            "mixed": "⚖️ **Mixed Population (Default):** 30% Deflectors (costly on-call), 30% Acquirers (empire-building), 40% Aligned (truthful). Reflects a realistic heterogeneous organization.",
+            "deflection": "🛡️ **Deflection Crisis (Volunteer's Dilemma):** 50% Deflectors (ℓ > 0), 50% Aligned. Agents shade reports downward to avoid work, driving up Miss Loss (ΔV).",
+            "acquisition": "👑 **Acquisition Hoarding (Empire Building):** 50% Acquirers (ℓ < 0), 50% Aligned. Agents shade reports upward to grab tasks, driving up Excess Cost (ΔC).",
+            "aligned": "🤝 **Fully Aligned (Honest Baseline):** 100% Aligned (ℓ = 0). No strategic shading; isolates the pure effects of ML sensor noise and miscalibration.",
+            "custom": "🎛️ **Custom Proportions:** Interactively set the exact fractions of Deflectors, Acquirers, and Aligned agents using the sliders below.",
+        }
+        st.info(REGIME_EXPLANATIONS[agent_regime])
 
         deflector_ratio = 0.3
         acquirer_ratio = 0.3
         neutral_ratio = 0.4
-        if agent_regime == "custom":
-            st.markdown("Custom population proportions (ϕ_defl + ϕ_acq ≤ 1):")
+        if agent_regime == "deflection":
+            deflector_ratio = 0.5
+            acquirer_ratio = 0.0
+            neutral_ratio = 0.5
+        elif agent_regime == "acquisition":
+            deflector_ratio = 0.0
+            acquirer_ratio = 0.5
+            neutral_ratio = 0.5
+        elif agent_regime == "aligned":
+            deflector_ratio = 0.0
+            acquirer_ratio = 0.0
+            neutral_ratio = 1.0
+        elif agent_regime == "custom":
+            st.markdown("<b>Custom Population Proportions (ϕ_defl + ϕ_acq ≤ 1.0):</b>", unsafe_allow_html=True)
             deflector_ratio = st.slider("Deflector Fraction (ϕ_defl)", 0.0, 1.0, 0.33, 0.05)
             acquirer_ratio = st.slider(
                 "Acquirer Fraction (ϕ_acq)",
@@ -303,17 +346,18 @@ def configure_parameters() -> SimulationConfig:
                 0.05,
             )
             neutral_ratio = max(0.0, 1.0 - deflector_ratio - acquirer_ratio)
-            st.caption(f"Aligned Fraction (ϕ_neutral): {neutral_ratio:.2f}")
+            st.caption(f"Aligned Fraction (ϕ_aligned): {neutral_ratio:.2f}")
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['deflector_ell']['symbol']}</b>: {PARAMETER_METADATA['deflector_ell']['desc']}</div>",
             unsafe_allow_html=True,
         )
         deflector_ell = st.number_input(
-            "Deflector Cost (ℓ_defl ≥ 0)",
+            "Deflector Toil Cost (ℓ_defl ≥ 0)",
             min_value=0.0,
             value=2.0,
             step=0.5,
+            help="Private operational/toil cost felt by deflector agents when assigned.",
         )
 
         st.markdown(
@@ -321,10 +365,11 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         acquirer_ell = st.number_input(
-            "Acquirer Benefit (ℓ_acq ≤ 0)",
+            "Acquirer Ownership Benefit (ℓ_acq ≤ 0)",
             max_value=0.0,
             value=-2.0,
             step=0.5,
+            help="Private benefit gained by acquirer agents from grabbing task ownership.",
         )
 
         st.markdown(
@@ -332,10 +377,11 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         seed = st.number_input(
-            "Random Seed (s)",
+            "Random Seed (for Reproducibility)",
             min_value=0,
             value=p_dict.get("seed", 42),
             step=1,
+            help="Master random seed ensuring deterministic reproducibility across runs.",
         )
 
     # Group 2: Mechanism M Incentives
@@ -345,11 +391,12 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         score_scale = st.slider(
-            "Brier Score Scale (λ)",
+            "Proper Scoring Scale (λ)",
             min_value=0.0,
             max_value=10.0,
             value=float(p_dict.get("score_scale", 2.5)),
             step=0.5,
+            help="Scale of centered Brier score. Higher λ forces truthful probability reports.",
         )
 
         st.markdown(
@@ -357,11 +404,12 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         audit_rate = st.slider(
-            "Audit Rate (α)",
+            "Graph Audit Rate (α)",
             min_value=0.0,
             max_value=1.0,
             value=float(p_dict.get("audit_rate", 0.2)),
             step=0.05,
+            help="Fraction of submitted evidence payloads inspected via peer cross-checks.",
         )
 
         st.markdown(
@@ -369,11 +417,12 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         audit_penalty = st.number_input(
-            "Audit Penalty (F)",
+            "Audit Penalty for Falsification (F)",
             min_value=0.0,
             max_value=50.0,
             value=float(p_dict.get("audit_penalty", 10.0)),
             step=1.0,
+            help="Fine deducted from an agent if cross-verification detects tampered evidence.",
         )
 
         st.markdown(
@@ -381,11 +430,12 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         audit_detection_delta = st.slider(
-            "Neighbor Detection Rate (δ)",
+            "Peer Contradiction Detection Rate (δ)",
             min_value=0.0,
             max_value=1.0,
             value=0.4,
             step=0.05,
+            help="Per-neighbor probability of exposing falsified local logs: q_i = α[1 - (1-δ)^m_i].",
         )
 
         st.markdown(
@@ -393,17 +443,23 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         cost_per_audit = st.number_input(
-            "Cost per Audit (c_a)",
+            "Marginal Cost per Audit (c_a)",
             min_value=0.0,
             value=0.1,
             step=0.05,
+            help="Operational expense incurred by the mechanism per audit inspection.",
         )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['credit_rule']['symbol']}</b>: {PARAMETER_METADATA['credit_rule']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        credit_rule_str = st.selectbox("Credit Rule (χ)", ["SHAPLEY", "EQUAL_SPLIT"], index=0)
+        credit_rule_str = st.selectbox(
+            "Coalition Credit Sharing Rule (χ)",
+            ["SHAPLEY", "EQUAL_SPLIT"],
+            index=0,
+            help="SHAPLEY: Allocates based on marginal contribution (zero to dummy players). EQUAL_SPLIT: Uniform split.",
+        )
         credit_rule = (
             CreditRule.SHAPLEY if credit_rule_str == "SHAPLEY" else CreditRule.EQUAL_SPLIT
         )
@@ -415,9 +471,10 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         rule_str = st.selectbox(
-            "Resolution Rule",
+            "Task Resolution Rule (V)",
             ["CONJUNCTIVE", "DISJUNCTIVE"],
             index=0 if p_dict.get("rule", ResolutionRule.CONJUNCTIVE) == ResolutionRule.CONJUNCTIVE else 1,
+            help="CONJUNCTIVE: All required owners in S* must be assigned (cross-module features/incidents). DISJUNCTIVE: Any single required owner suffices (specialist routing).",
         )
         rule = (
             ResolutionRule.CONJUNCTIVE
@@ -430,24 +487,25 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         use_coalition_range = st.checkbox(
-            "Use Stochastic Coalition Range",
+            "Stochastic Coalition Size (Randomize |S*| per Task)",
             value=p_dict.get("use_coalition_range", True),
+            help="Draws the required owner set size k ~ Uniform(k_min, k_max) dynamically each round.",
         )
 
         if use_coalition_range:
             col_min, col_max = st.columns(2)
             with col_min:
-                coalition_min = st.number_input("Min k", min_value=1, max_value=num_agents, value=1)
+                coalition_min = st.number_input("Min Owners (k_min)", min_value=1, max_value=num_agents, value=1)
             with col_max:
                 coalition_max = st.number_input(
-                    "Max k",
+                    "Max Owners (k_max)",
                     min_value=coalition_min,
                     max_value=num_agents,
                     value=min(5, num_agents),
                 )
             coalition_size_k = coalition_min
         else:
-            coalition_size_k = st.slider("Fixed Coalition Size (k)", 1, num_agents, 2)
+            coalition_size_k = st.slider("Fixed Coalition Size (k)", 1, num_agents, min(2, num_agents))
             coalition_min = coalition_size_k
             coalition_max = coalition_size_k
 
@@ -456,10 +514,11 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         reward_per_owner = st.number_input(
-            "Reward per Owner (R_k)",
+            "Task Reward Scale (R per Owner)",
             min_value=0.0,
             value=float(p_dict.get("reward_per_owner", 5.0)),
             step=1.0,
+            help="Resolution value multiplier. Total task reward is R = R_k * k.",
         )
 
         st.markdown(
@@ -467,33 +526,49 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         default_cost = st.number_input(
-            "Social Cost per Agent (c_i)",
+            "Social Compute/Labor Cost per Agent (c_i)",
             min_value=0.0,
             value=1.0,
             step=0.25,
+            help="Public social cost expended when agent i is assigned (compute, tokens, engineer hours).",
         )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['cluster_prob']['symbol']}</b>: {PARAMETER_METADATA['cluster_prob']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        cluster_prob = st.slider("Graph Cluster Prob", 0.0, 1.0, 0.7, 0.05)
+        cluster_prob = st.slider(
+            "Incident Network Cluster Probability",
+            0.0,
+            1.0,
+            0.7,
+            0.05,
+            help="Probability that additional coalition owners belong to the root owner's network cluster.",
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['hop_decay']['symbol']}</b>: {PARAMETER_METADATA['hop_decay']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        hop_decay = st.slider("Hop Signal Decay", 0.1, 0.9, 0.5, 0.05)
+        hop_decay = st.slider(
+            "Multi-Hop Signal Decay Factor",
+            0.1,
+            0.9,
+            0.5,
+            0.05,
+            help="Geometric attenuation rate of incident evidence per graph hop from the ground-truth root fault.",
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['task_noise_sigma']['symbol']}</b>: {PARAMETER_METADATA['task_noise_sigma']['desc']}</div>",
             unsafe_allow_html=True,
         )
         task_noise_sigma = st.number_input(
-            "Task Embedding Noise (σ_task)",
+            "Task Representation Noise (σ_task)",
             min_value=0.0,
             value=0.2,
             step=0.05,
+            help="Gaussian perturbation applied to task semantic embeddings.",
         )
 
     # Group 4: Repository Environment & Dependency Graph
@@ -503,22 +578,36 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         graph_type = st.selectbox(
-            "Graph Topology (G)",
+            "Interaction Network Topology (G)",
             ["scale_free", "erdos_renyi", "complete", "empty"],
             index=0,
+            help="scale_free: Barabási–Albert service call graph. erdos_renyi: Random graph. complete: Fully connected. empty: Isolated nodes.",
         )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['avg_degree']['symbol']}</b>: {PARAMETER_METADATA['avg_degree']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        avg_degree = st.slider("Average Node Degree (<m>)", 1, 8, 4)
+        avg_degree = st.slider(
+            "Average Node Connections (<m>)",
+            1,
+            min(8, max(1, num_agents - 1)),
+            min(4, max(1, num_agents - 1)),
+            help="Mean number of peer links per agent used during graph cross-verification audits.",
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['embedding_dim']['symbol']}</b>: {PARAMETER_METADATA['embedding_dim']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        embedding_dim = st.number_input("Embedding Dim (d)", min_value=8, max_value=128, value=32, step=8)
+        embedding_dim = st.number_input(
+            "Capability Embedding Dimension (d)",
+            min_value=8,
+            max_value=128,
+            value=32,
+            step=8,
+            help="Dimensionality of latent module capability and task semantic vectors.",
+        )
 
     # Group 5: Private Evidence & Calibration
     with st.sidebar.expander("🔍 5. Private Evidence & Calibration", expanded=False):
@@ -526,30 +615,45 @@ def configure_parameters() -> SimulationConfig:
             f"<div class='param-box'><b>{PARAMETER_METADATA['obs_noise_sigma']['symbol']}</b>: {PARAMETER_METADATA['obs_noise_sigma']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        obs_noise_sigma = st.slider("Observation Noise (σ_obs)", 0.0, 0.5, 0.15, 0.02)
+        obs_noise_sigma = st.slider(
+            "Sensor / Log Observation Noise (σ_obs)",
+            0.0,
+            0.5,
+            0.15,
+            0.02,
+            help="Noise variance added to raw evidence observations before belief formation.",
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['missing_evidence_prob']['symbol']}</b>: {PARAMETER_METADATA['missing_evidence_prob']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        missing_evidence_prob = st.slider("Missing Evidence Rate (γ)", 0.0, 0.5, 0.0, 0.05)
+        missing_evidence_prob = st.slider(
+            "Missing Private Evidence Rate (γ)",
+            0.0,
+            0.5,
+            0.0,
+            0.05,
+            help="Probability that an agent has no local logs/signals, forcing fallback to base rate prior π_i^0.",
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['signal_sensitivity']['symbol']}</b>: {PARAMETER_METADATA['signal_sensitivity']['desc']}</div>",
             unsafe_allow_html=True,
         )
         signal_sensitivity = st.number_input(
-            "Signal Sensitivity (β_1)",
+            "Belief Sensitivity Slope (β_1)",
             min_value=0.0,
             value=8.0,
             step=1.0,
+            help="Slope of logistic transformation from local evidence metric to probability belief π_i.",
         )
 
         use_auto_midpoint = st.checkbox("Auto-compute midpoint (0.23 * sqrt(2/k))", value=True)
         signal_midpoint_override = 0.23
         if not use_auto_midpoint:
             signal_midpoint_override = st.number_input(
-                "Manual Midpoint",
+                "Manual Signal Midpoint",
                 min_value=0.0,
                 max_value=1.0,
                 value=0.23,
@@ -561,12 +665,12 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         calibration_kappa = st.slider(
-            "Calibration Exponent (κ)",
+            "ML Confidence Calibration (κ)",
             min_value=0.2,
             max_value=3.0,
             value=1.0,
             step=0.1,
-            help="1.0: Calibrated. >1: Overconfident. <1: Underconfident.",
+            help="1.0: Calibrated. >1.0: Overconfident LLM (probabilities polarized to 0/1). <1.0: Underconfident.",
         )
 
     # Group 6: Strategic Agents & Dynamic Learning
@@ -576,27 +680,49 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         dynamic_mode = st.checkbox(
-            "Enable Mode 2 Dynamic Learning",
+            "Enable Dynamic Learning & Workload Fatigue",
             value=p_dict.get("dynamic_mode", False),
+            help="When checked, agents accumulate fatigue from repeated on-call shifts and update perceived credit payouts.",
         )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['beta_load']['symbol']}</b>: {PARAMETER_METADATA['beta_load']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        beta_load = st.slider("Fatigue Sensitivity (β_load)", 0.0, 2.0, 0.5, 0.1)
+        beta_load = st.slider(
+            "Workload Fatigue Penalty (β_load)",
+            0.0,
+            2.0,
+            0.5,
+            0.1,
+            help="Increase in effective private assignment cost per unit of accumulated on-call load.",
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['load_decay']['symbol']}</b>: {PARAMETER_METADATA['load_decay']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        load_decay = st.slider("Workload Decay (γ_load)", 0.1, 0.95, 0.6, 0.05)
+        load_decay = st.slider(
+            "Fatigue Recovery / Decay Rate (γ_load)",
+            0.1,
+            0.95,
+            0.6,
+            0.05,
+            help="Geometric memory decay rate for accumulated on-call fatigue when resting.",
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['alpha_credit_ema']['symbol']}</b>: {PARAMETER_METADATA['alpha_credit_ema']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        alpha_credit_ema = st.slider("Credit EMA Smoothing (α_ema)", 0.01, 0.5, 0.1, 0.05)
+        alpha_credit_ema = st.slider(
+            "Credit Learning Smoothing (α_credit)",
+            0.01,
+            0.5,
+            0.1,
+            0.05,
+            help="Exponential moving average factor for learning expected coalition credit: ℓ_eff = ℓ - χ_bar.",
+        )
 
         # Agent internals
         st.markdown("<b>Agent Internal Heuristics:</b>", unsafe_allow_html=True)
@@ -631,18 +757,26 @@ def configure_parameters() -> SimulationConfig:
             unsafe_allow_html=True,
         )
         b1_staleness_rho = st.slider(
-            "B1 Description Staleness (ρ)",
+            "Central Catalog Staleness Rate (ρ)",
             0.0,
             1.0,
             float(p_dict.get("b1_staleness_rho", 0.3)),
             0.05,
+            help="Fraction of central description profiles that are completely outdated.",
         )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['b1_desc_noise_sigma']['symbol']}</b>: {PARAMETER_METADATA['b1_desc_noise_sigma']['desc']}</div>",
             unsafe_allow_html=True,
         )
-        b1_desc_noise_sigma = st.slider("B1 Description Noise (σ_desc)", 0.0, 0.5, 0.25, 0.05)
+        b1_desc_noise_sigma = st.slider(
+            "Text Description Semantic Noise (σ_desc)",
+            0.0,
+            0.5,
+            0.25,
+            0.05,
+            help="Noise in matching textual descriptions to task requirements.",
+        )
 
         st.markdown(
             f"<div class='param-box'><b>{PARAMETER_METADATA['b3_peer_noise_sigma']['symbol']}</b>: {PARAMETER_METADATA['b3_peer_noise_sigma']['desc']}</div>",
@@ -651,7 +785,7 @@ def configure_parameters() -> SimulationConfig:
         b3_disabled = (rule == ResolutionRule.CONJUNCTIVE)
         b3_help = "Single-choice plurality voting only applies to Disjunctive tasks (excluded under Conjunctive mode)."
         b3_peer_noise_sigma = st.slider(
-            "B3 Voting Peer Noise (σ_peer)",
+            "Plurality Voting Signal Noise (σ_peer)",
             0.0,
             0.5,
             0.25,
