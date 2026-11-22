@@ -1,0 +1,531 @@
+"""Guided preparation, training and replay for historical repository experiments."""
+from collections import Counter
+from datetime import date
+import os
+from pathlib import Path
+import subprocess
+
+import pandas as pd
+import streamlit as st
+
+from src.e1.evidence import Snapshot
+from src.lab.intake import CACHE, read
+from src.lab.ownership import (Ownership, default_cutoffs, label_cases, partition, rule_counts,
+                               source_paths, suggest_from_tree, suggested_groups, verify_rules)
+from src.lab.repository import FileSnapshot, Interrupted, check_period_support, inspect, GitHub, history_estimate, missing_bytes, preflight, prepare
+from src.lab.storage import LAB_CACHE, MIB, Store, StorageLimit, usage
+from src.lab.preset import load_prepared
+from src.lab.replay import Settings
+from src.lab.training import extract_one, train
+from src.lab.direct import django_setup, prepare as prepare_direct
+from src.lab.preset import ROOT
+from src.lab_ui.graph import graph
+
+
+def stage(name):
+    st.session_state["setup_stage"] = name
+
+
+def open_replay(path):
+    preset = load_prepared(path)
+    st.session_state.update(active_prepared_path=str(path), historical_view="experiment",
+                            historical_run=Settings(strategic_agents=round(len(preset.manifest["modules"]) * 2 / 3)))
+    st.switch_page("app/lab/historical.py")
+
+
+def saved_runs():
+    paths = sorted([*(CACHE / "runs").glob("*/inputs.json.gz"),
+                    *LAB_CACHE.glob("*/*/runs/*/inputs.json.gz"),
+                    *LAB_CACHE.glob("*/*/direct/*/inputs.json.gz")], key=lambda p: p.stat().st_mtime, reverse=True)
+    if paths:
+        with st.expander("Open a saved experiment"):
+            path = st.selectbox("Prepared run", paths, format_func=lambda p: f"{p.parents[2].name} · {p.parent.name[:12]}")
+            manifest = load_prepared(path).manifest
+            st.caption(" · ".join(manifest["modules"]) + f" · {manifest['split_counts']['test']} held-out changes")
+            if st.button("Open saved replay"):
+                open_replay(path)
+
+
+def repository():
+    st.header("Choose a repository")
+    url = st.text_input("Public GitHub URL", placeholder="https://github.com/owner/project")
+    year = date.today().year - 1
+    left, right = st.columns(2)
+    start = left.date_input("Merged from", date(year, 1, 1), min_value=date(2008, 1, 1), max_value=date.today())
+    end = right.date_input("Merged through", date(year, 12, 31), min_value=date(2008, 1, 1), max_value=date.today())
+    if st.button("Check repository", type="primary"):
+        with st.spinner("Checking public repository metadata"):
+            info = inspect(url, start, end)
+        reset_setup()
+        st.session_state["setup_info"] = info
+        stage("roots")
+        st.rerun()
+    if (CACHE / "scan.json").exists() and st.button("Review scikit-learn pilot"):
+        reset_setup()
+        st.session_state["setup_scan"] = read(CACHE / "scan.json")
+        stage("suitability")
+        st.rerun()
+    if (ROOT / "results" / "inputs" / "issues.json").exists() and st.button("Run Django direct probabilities"):
+        scan, groups, cutoffs = django_setup(ROOT)
+        reset_setup()
+        st.session_state.update(setup_scan=scan, setup_groups=groups, setup_cutoffs=cutoffs,
+                                setup_source="direct", setup_direct_size=10)
+        stage("direct")
+        st.rerun()
+    saved_runs()
+    directories = sorted(p.parent for p in LAB_CACHE.glob("*/*/.active"))
+    if directories:
+        with st.expander("Manage downloaded data"):
+            directory = st.selectbox("Repository cache", directories,
+                                     format_func=lambda p: str(p.relative_to(LAB_CACHE)))
+            st.caption(f"{usage(directory) / MIB:.2f} MiB including saved runs.")
+            if st.button("Remove downloads and keep saved replays"):
+                Store(LAB_CACHE, str(directory.relative_to(LAB_CACHE))).clear_downloads()
+                st.success("Downloaded history, source and evidence cleared.")
+
+
+def reset_setup():
+    for key in list(st.session_state):
+        if key.startswith("setup_") or key == "owners_editor":
+            del st.session_state[key]
+
+
+def roots_page():
+    info = st.session_state["setup_info"]
+    st.header("Check production roots")
+    st.caption(f"{info['repository']} · revision {info['revision'][:12]} · "
+               f"{info['source_files']} Python files · {info['source_bytes'] / MIB:.2f} MiB")
+    if unsupported := info.get("unsupported_examples"):
+        st.warning("This repository contains production source outside the Python analysis. "
+                   "Fixes that touch unsupported production files are excluded in full. "
+                   f"Examples include {', '.join(unsupported)}.")
+    roots = st.multiselect("Production paths to include", info["roots"], default=info["roots"])
+    store = Store(LAB_CACHE, info["repository"])
+    estimate = history_estimate(store, GitHub(info["repository"]))
+    st.write(f"Estimated additional bare Git history: **{estimate / MIB:.1f} MiB** · "
+             f"available within disk limits: **{max(0, store.space()[2]) / MIB:.1f} MiB**.")
+    st.caption("The estimate uses repository storage reported by GitHub. Actual packed size can differ. "
+               "History that fits is downloaded without a working checkout. Larger repositories use bounded Git packs for selected revisions.")
+    if st.button("Check history and storage", type="primary", disabled=not roots):
+        with st.status("Checking linked changes and historical file sizes", expanded=True) as status:
+            scan = preflight(info, roots, progress=st.empty().write)
+            status.update(label="Metadata complete", state="complete")
+        if st.session_state.get("setup_scan", {}).get("roots") != roots:
+            for key in ("setup_groups", "setup_cutoffs", "owners_editor"):
+                st.session_state.pop(key, None)
+        st.session_state["setup_scan"] = scan
+        stage("suitability")
+        st.rerun()
+
+
+def suitability(scan):
+    counts = scan["counts"]
+    st.header("Repository suitability")
+    st.table(pd.Series({"Merged pull requests": counts["merged"], "One same-repository closing link": counts["linked"],
+                        "Recoverable pre-fix parent": counts["recoverable"], "Verified production Python change": counts["python"],
+                        "Available issue text and fix chronology": len(scan["cases"])}, name="Cases"))
+    if "roots" in scan:
+        st.caption(f"{counts.get('unsupported', 0)} fixes excluded for changes to unsupported production source.")
+        store = Store(LAB_CACHE, scan["repository"])
+        needed = history_estimate(store, GitHub(scan["repository"])) if missing_bytes(scan, store) else 0
+        used, total, available = store.space()
+        st.write(f"Estimated additional Git history: **{needed:,} bytes**. "
+                 f"Available within storage limits: **{max(0, available):,} bytes**.")
+        st.caption(f"Repository cache {used / MIB:.2f} MiB · lab cache {total / MIB:.2f} MiB · "
+                   f"limits {store.limits.snapshot // MIB} MiB per snapshot, "
+                   f"{store.limits.repository // MIB} MiB per repository, {store.limits.total // MIB} MiB total, "
+                   f"{store.limits.reserve // MIB} MiB kept free.")
+        if needed > available or (store.directory / "selected.git").exists():
+            needed = missing_bytes(scan, store)
+            st.info(f"Using selected Git packs. Remaining source content is {needed / MIB:.1f} MiB "
+                    "before compression and tree overhead. Actual storage is monitored.")
+        store.check(needed)
+    else:
+        st.caption(f"{counts.get('compiled', 0)} pilot patches included compiled-source changes.")
+    with st.expander("Excluded pull requests and reasons"):
+        st.dataframe([{"PR": n, "Reason": reason} for n, reason in scan["excluded"].items()], hide_index=True)
+    if "roots" in scan:
+        try:
+            check_period_support(scan["cases"])
+        except ValueError as error:
+            st.error(str(error))
+            return
+    if len(scan["cases"]) < 3:
+        st.error("Unsuitable for a three-period replay. Too few usable changes survived the scan.")
+        return
+    st.success("Ready for ownership mapping. The next checks measure coverage and time-period support for your map.")
+    if "roots" in scan:
+        if st.button("Prepare experiment", type="primary"):
+            with st.status("Preparing verified Git history", expanded=True):
+                prepare(scan, progress=st.empty().write)
+            stage("ownership")
+            st.rerun()
+    else:
+        st.button("Define agents", on_click=stage, args=("ownership",), type="primary")
+
+
+@st.cache_data(show_spinner=False)
+def tree(base, repository, roots):
+    if roots is not None:
+        source = FileSnapshot(Store(LAB_CACHE, repository).directory, roots)
+        return [p for _, p in source.files(base, roots)]
+    return source_paths(CACHE / "source.git", base)
+
+
+@st.cache_data(show_spinner=False)
+def preview(case, groups, repository, roots):
+    source = FileSnapshot(Store(LAB_CACHE, repository).directory, roots) if roots else Snapshot(CACHE / "source.git")
+    try:
+        snapshot = extract_one(source, case, Ownership(groups, roots))
+        return {"base": snapshot["base"], "edges": [edge[:4] for edge in snapshot["edges"]]}
+    finally:
+        source.close()
+
+
+def mapping(scan):
+    st.header("Define module owners")
+    repository, roots = scan["repository"], scan.get("roots")
+    paths = tree(scan["cases"][0]["base"], repository, roots)
+    suggestions = suggest_from_tree(paths, roots) if roots else suggested_groups(paths)
+    initial = st.session_state.get("setup_groups", suggestions)
+    st.write("Edit the suggested groups, add an agent or remove a row to merge agents. "
+             "Give each agent one or more comma-separated paths. The most specific file or folder wins.")
+    edited = st.data_editor([{"Agent": g["name"], "Paths": ", ".join(g["paths"])} for g in initial],
+                            num_rows="dynamic", hide_index=True, key="owners_editor", width="stretch")
+
+    all_rows = []
+    for r in (edited if isinstance(edited, list) else edited.to_dict("records")):
+        name = (r.get("Agent") or "").strip()
+        paths = [p.strip() for p in (r.get("Paths") or "").split(",") if p.strip()]
+        all_rows.append({"name": name, "paths": paths})
+
+    del_col, btn_col, reset_col = st.columns([3, 1, 1.2])
+    with del_col:
+        del_idx = st.selectbox(
+            "Select owner to delete",
+            options=list(range(len(all_rows))),
+            format_func=lambda i: f"#{i + 1}: {all_rows[i]['name'] or '(unnamed)'}" + (
+                f" — {', '.join(all_rows[i]['paths'])}" if all_rows[i]['paths'] else ""
+            ),
+            label_visibility="collapsed",
+            key="delete_owner_select",
+            disabled=len(all_rows) == 0,
+        )
+    with btn_col:
+        can_delete = len(all_rows) > 2 and del_idx is not None and 0 <= del_idx < len(all_rows)
+        if st.button("Delete row", disabled=not can_delete, use_container_width=True,
+                     help="Delete the selected module owner row. At least two agents are required."):
+            remaining = [r for idx, r in enumerate(all_rows) if idx != del_idx]
+            st.session_state["setup_groups"] = remaining
+            st.session_state.pop("owners_editor", None)
+            st.rerun()
+    with reset_col:
+        if st.button("Reset suggested", use_container_width=True,
+                     help="Reset module owners to default suggestions."):
+            st.session_state["setup_groups"] = suggestions
+            st.session_state.pop("owners_editor", None)
+            st.rerun()
+
+    st.caption("💡 To delete an owner: choose a row above and click **Delete row**, or select the row's checkbox in the table and click the 🗑️ trash icon in the toolbar (or press Delete).")
+
+    valid_rows = [r for r in all_rows if r["name"] or r["paths"]]
+    try:
+        mapping = Ownership(valid_rows, roots)
+    except ValueError as error:
+        st.error(str(error))
+        return
+    history = {p for base in {c["base"] for c in scan["cases"]} for p in tree(base, repository, roots)}
+    rows = rule_counts(mapping, paths, history)
+    st.dataframe(rows, hide_index=True)
+    try:
+        verify_rules(rows)
+    except ValueError as error:
+        st.error(str(error))
+        return
+    if any(not row["First snapshot"] for row in rows):
+        st.info("Some rules first match a file in a later snapshot.")
+    cases, excluded = label_cases(scan, mapping)
+    assigned = [mapping.owner(p) for p in paths]
+    st.caption(f"{len(mapping.names)} agents · {sum(i is None for i in assigned)} unmapped files at the first snapshot · "
+               f"{len(cases)} eligible changes · {len(excluded)} excluded")
+    with st.expander("Preview file ownership and excluded changes"):
+        st.dataframe([{"Path": p, "Owner": mapping.names[i] if i is not None else "Unmapped"}
+                      for p, i in zip(paths, assigned)], hide_index=True)
+        if excluded:
+            st.dataframe([{"Fix": k, "Reason": v} for k, v in excluded.items()], hide_index=True)
+    if len(cases) < 3:
+        st.warning("This map leaves fewer than three changes. Assign more production paths.")
+        return
+    example = cases[0]
+    st.subheader("Preview an early change")
+    st.write(f"[#{example['pr']} · {example['title']}](https://github.com/{repository}/pull/{example['pr']})")
+    st.dataframe([{"Changed path": p, "Required agent": mapping.names[mapping.owner(p)]} for p in example["paths"]],
+                 hide_index=True)
+    if roots:
+        st.caption("The preview graph shows imports resolved within eligible Python source at the pre-fix revision.")
+    graph(preview(example, mapping.groups, repository, roots), mapping.names, repository)
+    if st.button("Use this ownership map", type="primary"):
+        if st.session_state.get("setup_groups") != mapping.groups:
+            st.session_state.pop("setup_cutoffs", None)
+        st.session_state["setup_groups"] = mapping.groups
+        stage("timeline")
+        st.rerun()
+
+
+def timeline(scan):
+    st.header("Choose the issue timeline")
+    groups = st.session_state["setup_groups"]
+    cases, _ = label_cases(scan, Ownership(groups, scan.get("roots")))
+    proposed = st.session_state.get("setup_cutoffs", default_cutoffs(cases))
+    st.write("Start with approximately 60% for learning, 20% for calibration and reporting strategies, "
+             "and 20% for evaluation. Earlier periods can only use changes merged before the next cutoff.")
+    st.caption("Cases are dated when both the issue and the first parent of its merge exist. "
+               "For a long-running issue this can be much later than the filing date.")
+    first, second = st.columns(2)
+    cutoffs = [first.date_input("Validation starts (UTC)", date.fromisoformat(proposed[0])).isoformat(),
+               second.date_input("Held-out evaluation starts (UTC)", date.fromisoformat(proposed[1])).isoformat()]
+    try:
+        retained, excluded = partition(cases, cutoffs)
+    except ValueError as error:
+        st.error(str(error))
+        return
+    counts = Counter(c["split"] for c in retained)
+    st.table([{"Period": split, "Retained changes": counts[split]} for split in ("train", "validation", "test")])
+    st.caption(f"{len(excluded)} changes crossed their label-availability cutoff.")
+    if excluded:
+        with st.expander("Excluded by cutoff"):
+            st.dataframe([{"Fix": k, "Reason": v} for k, v in excluded.items()], hide_index=True)
+    if len(counts) < 3:
+        st.warning("Each period needs at least one usable change. Adjust the cutoffs or ownership map.")
+    elif st.button("Accept dates and continue", type="primary"):
+        st.session_state["setup_cutoffs"] = cutoffs
+        stage("source")
+        st.rerun()
+
+
+def source(scan):
+    st.header("Choose how ownership probabilities are produced")
+    choice = st.radio("Probability source", ("Trained classifier", "Direct model probabilities"),
+                      help="Both choices use the same owners, dates, import graph, reporting game and issue inspection.")
+    if choice == "Trained classifier":
+        st.write("Learn ownership probabilities from earlier issue text and each agent's pre-fix source.")
+    else:
+        groups, cutoffs = st.session_state["setup_groups"], st.session_state["setup_cutoffs"]
+        ownership = Ownership(groups, scan.get("roots"))
+        if scan.get("cases") and "owners" in scan["cases"][0]:
+            eligible, _ = scan["cases"], {}
+        else:
+            eligible, _ = label_cases(scan, ownership)
+        retained, unavailable = partition(eligible, cutoffs)
+
+        model_name = os.getenv("E2_LLM_MODEL", "qwen2.5-coder:3b")
+        st.write(f"Ask the local model (**`{model_name}`**) for a probability using the issue and short excerpts from one owner's pre-fix source.")
+
+        default_max_len = int(os.getenv("MAX_ISSUE_LENGTH", "5000"))
+        max_len = st.number_input(
+            "Max issue length (characters)",
+            min_value=500,
+            max_value=50000,
+            value=st.session_state.get("setup_max_issue_length", default_max_len),
+            step=500,
+            help="Issues whose text exceeds this character count are skipped to avoid context overflow and timeouts."
+        )
+
+        valid_eligible = [c for c in retained if c["split"] == "validation" and len(c.get("text", "")) <= max_len]
+        test_eligible = [c for c in retained if c["split"] == "test" and len(c.get("text", "")) <= max_len]
+        skipped_val = sum(1 for c in retained if c["split"] == "validation" and len(c.get("text", "")) > max_len)
+        skipped_test = sum(1 for c in retained if c["split"] == "test" and len(c.get("text", "")) > max_len)
+        total_skipped = skipped_val + skipped_test
+
+        st.caption(f"Length filter excluded **{total_skipped}** issues (> {max_len:,} chars): "
+                   f"{skipped_val} in validation, {skipped_test} in evaluation. "
+                   f"**{len(valid_eligible)}** validation and **{len(test_eligible)}** evaluation issues available.")
+
+        max_selectable = min(len(valid_eligible), len(test_eligible))
+        if max_selectable == 0:
+            st.error("No eligible issues remaining under the current length threshold. Please increase the threshold.")
+            return
+
+        default_size = min(10, max_selectable)
+        selected = st.number_input(
+            "Number of issues to evaluate per period",
+            min_value=1,
+            max_value=max_selectable,
+            value=min(st.session_state.get("setup_direct_size", default_size), max_selectable),
+            step=1,
+            help=f"Select between 1 and {max_selectable} issues for validation and the same number for evaluation (excluding length-filtered issues)."
+        )
+        total_issues = selected * 2
+        total_calls = total_issues * len(groups)
+        st.write(f"Evaluating **{selected}** validation issues and **{selected}** evaluation issues (**{total_issues}** total issues).")
+        st.caption(f"This run will make up to **{total_calls}** local model calls ({len(groups)} agents × {total_issues} issues). "
+                   "Completed calls are saved to disk cache so retries resume instantly.")
+        st.session_state["setup_direct_size"] = selected
+        st.session_state["setup_max_issue_length"] = max_len
+    if st.button("Continue", type="primary"):
+        st.session_state["setup_source"] = "classifier" if choice == "Trained classifier" else "direct"
+        stage("training" if choice == "Trained classifier" else "direct")
+        st.rerun()
+
+
+def training(scan):
+    st.header("Train ownership models")
+    st.write("Each agent learns from words, symbols and paths in its own pre-fix source. "
+             "Prepared evidence is saved after each issue so interrupted extraction can resume.")
+    groups, cutoffs = st.session_state["setup_groups"], st.session_state["setup_cutoffs"]
+    st.caption(f"{len(groups)} agents · validation starts {cutoffs[0]} · evaluation starts {cutoffs[1]}")
+    if st.button("Train models", type="primary"):
+        with st.status("Preparing repository-local predictors", expanded=True) as status:
+            message = st.empty()
+            try:
+                path = train(scan, groups, cutoffs, cache=CACHE, progress=message.write)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                status.update(label="Training incomplete", state="error")
+                st.error(f"{error}. Completed issue evidence is available for a retry.")
+                return
+            status.update(label="Training complete", state="complete")
+        st.session_state["setup_result"] = str(path)
+        stage("results")
+        st.rerun()
+
+
+def direct(scan):
+    st.header("Generate ownership probabilities")
+    groups, cutoffs = st.session_state["setup_groups"], st.session_state["setup_cutoffs"]
+    selected = st.session_state.get("setup_direct_size", 10)
+    max_len = st.session_state.get("setup_max_issue_length", 5000)
+    st.write("The local model receives each issue and short excerpts from the selected owner's code before the fix. "
+             "It returns one ownership probability at a time.")
+    st.caption(f"Evaluating **{selected}** issues per period (validation & evaluation) · Max issue length: **{max_len:,}** chars · {len(groups)} agents")
+
+    if st.button("Generate probabilities", type="primary"):
+        with st.status("Generating local model probabilities", expanded=True) as status:
+            overall_bar = st.progress(0.0)
+            overall_metric = st.empty()
+            current_issue_box = st.empty()
+            agents_box = st.empty()
+
+            agent_states = {}
+
+            def handle_progress(evt):
+                etype = evt.get("type")
+                if etype == "issue_start":
+                    nonlocal agent_states
+                    agent_states = {a: {"status": "pending", "probability": None, "elapsed": None} for a in evt["agents"]}
+                    current_issue_box.markdown(
+                        f"#### Period: `{evt['period']}` · Issue {evt['case_number']}/{evt['total_cases']}\n"
+                        f"**{evt['case_id']}** — *{evt['title'][:80]}*"
+                    )
+                elif etype == "agent_update":
+                    agent = evt["agent"]
+                    agent_states[agent] = {
+                        "status": evt["status"],
+                        "probability": evt.get("probability"),
+                        "elapsed": evt.get("elapsed"),
+                        "error": evt.get("error"),
+                    }
+                    step = evt["overall_step"]
+                    total = evt["total_steps"]
+                    pct = int((step / total) * 100) if total > 0 else 0
+                    overall_bar.progress(min(1.0, max(0.0, step / total)) if total > 0 else 0.0)
+                    overall_metric.markdown(f"**Overall Progress:** {step}/{total} agent predictions ({pct}%)")
+
+                    lines = ["| Agent | Status | Probability | Time |", "| :--- | :--- | :--- | :--- |"]
+                    for ag_name, st_info in agent_states.items():
+                        s = st_info["status"]
+                        if s == "calling":
+                            badge = "⏳ **Calling model...**"
+                            p_str = "—"
+                            t_str = "—"
+                        elif s == "cached":
+                            p = st_info["probability"]
+                            badge = "⚡ Cached"
+                            p_str = f"`{p:.2f}`" if p is not None else "—"
+                            t_str = "—"
+                        elif s == "done":
+                            p = st_info["probability"]
+                            el = st_info["elapsed"]
+                            badge = "✅ Done"
+                            p_str = f"`{p:.2f}`" if p is not None else "—"
+                            t_str = f"{el:.1f}s" if el is not None else "—"
+                        elif s == "error":
+                            badge = "❌ Error"
+                            p_str = "—"
+                            t_str = "—"
+                        else:
+                            badge = "⏸️ Pending"
+                            p_str = "—"
+                            t_str = "—"
+                        lines.append(f"| {ag_name} | {badge} | {p_str} | {t_str} |")
+                    agents_box.markdown("\n".join(lines))
+
+            try:
+                print(f"\n=== Starting direct probability generation ({selected} issues/period, max_len={max_len}) ===", flush=True)
+                path = prepare_direct(scan, groups, cutoffs, selected_per_period=selected,
+                                      max_issue_length=max_len, cache=LAB_CACHE,
+                                      progress=current_issue_box.write,
+                                      on_progress=handle_progress)
+                print(f"\n=== Direct probability generation complete ===\n", flush=True)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                status.update(label="Generation incomplete", state="error")
+                st.error(f"{error} Completed responses are available for a retry.")
+                print(f"\n=== Direct probability generation incomplete: {error} ===\n", flush=True)
+                return
+            status.update(label="Probabilities ready", state="complete")
+        st.session_state["setup_result"] = str(path)
+        stage("results")
+        st.rerun()
+
+
+def results():
+    path = Path(st.session_state["setup_result"])
+    preset = load_prepared(path)
+    st.header("Ownership probability results")
+    counts = preset.manifest["split_counts"]
+    st.write(f"Learned from {counts['train']} changes, calibrated on {counts['validation']}, "
+             f"and evaluated on {counts['test']} later changes.")
+
+    skipped_count = preset.manifest.get("skipped_length_count", 0)
+    max_len = preset.manifest.get("max_issue_length")
+    if skipped_count > 0:
+        st.info(f"ℹ️ **Length filtering:** Skipped **{skipped_count}** issues exceeding the threshold of **{max_len:,}** characters to keep LLM context concise.")
+
+    if preset.manifest.get("probability_source") == "direct_model":
+        st.write("These are probabilities returned directly by the local model. Brier loss is their average squared error. Lower is better.")
+    else:
+        st.write("Brier loss is the average squared error of the ownership probability. "
+                 "Calibration error compares predicted and observed frequencies in ten probability bins. Lower is better for both.")
+    st.dataframe(preset.manifest["model_metrics"], hide_index=True, width="stretch")
+    st.caption(f"{len(preset.issues)} held-out changes · {sum(preset.outcomes.sum(axis=1) > 1)} require multiple agents · "
+               f"run {path.parent.name[:12]}")
+    if st.button("Open reporting game", type="primary"):
+        open_replay(path)
+
+
+def main():
+    current = st.session_state.get("setup_stage", "repository")
+    next_step = "direct" if st.session_state.get("setup_source") == "direct" or current == "direct" else "training"
+    steps = ["repository", "suitability", "ownership", "timeline", "source", next_step, "results"]
+    if "setup_info" in st.session_state:
+        steps.insert(1, "roots")
+    st.caption(f"New repository experiment · {steps.index(current) + 1} of {len(steps)}")
+    if current != "repository":
+        st.button("← Back", on_click=stage, args=(steps[steps.index(current) - 1],))
+    if current == "repository":
+        repository()
+    elif current == "roots":
+        roots_page()
+    elif current == "results":
+        results()
+    else:
+        scan = st.session_state["setup_scan"]
+        {"suitability": suitability, "ownership": mapping, "timeline": timeline, "source": source,
+         "training": training, "direct": direct}[current](scan)
+
+
+try:
+    main()
+except Interrupted as error:
+    st.warning(f"Scan or download interrupted. Retry the current action to resume. {error}")
+except (StorageLimit, OSError, ValueError, subprocess.SubprocessError) as error:
+    st.error(str(error))

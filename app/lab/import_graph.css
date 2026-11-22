@@ -1,0 +1,9 @@
+.imports {font: inherit; font-size: .875rem;}
+.imports svg {width: 100%; max-height: 365px; display: block;}
+.imports g[role=button] {cursor: pointer;}
+.imports svg text {fill: var(--st-text-color, currentColor); font: 600 14px system-ui, sans-serif;}
+.imports g:focus-visible {outline: 2px solid #0c8582;}
+.imports g.connection:hover path:last-of-type {stroke: #087778; stroke-width: 3;}
+.imports div {min-height: 2.5em; overflow-wrap: anywhere;}
+.imports p {margin: .15rem 0;}
+.imports a {color: var(--st-link-color, #147a81);}
