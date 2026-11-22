@@ -43,6 +43,9 @@ def test_simulation_runner_default_static():
     assert "Regret" in mech_row
     assert "Net Welfare" in mech_row
     assert "Incentive Overhead" in mech_row
+    assert oracle_row["Efficiency Ratio (η)"] == 1.0
+    expected_eff = round(mech_row["Welfare (Gross)"] / oracle_row["Welfare (Gross)"], 3)
+    assert mech_row["Efficiency Ratio (η)"] == expected_eff
 
 
 def test_simulation_runner_dynamic_mode():

@@ -861,6 +861,7 @@ def run_full_simulation(
         if not (config.rule == ResolutionRule.CONJUNCTIVE and name == "Voting (B3)")
     ]
     summary_data = []
+    w_oracle_mean = float(np.mean(trackers["Oracle (B4)"]["welfare"]))
     for name in display_systems:
         w_mean = float(np.mean(trackers[name]["welfare"]))
         reg_mean = float(np.mean(trackers[name]["regret"]))
@@ -868,7 +869,12 @@ def run_full_simulation(
         exc_mean = float(np.mean(trackers[name]["excess_cost"]))
         res_mean = float(np.mean(trackers[name]["resolved"]))
         cost_mean = float(np.mean(trackers[name]["cost"]))
-        eff_mean = float(np.mean(trackers[name]["efficiency"]))
+
+        # Formal definition from Proposal Eq. 6: eta(M) = W(M) / W(M^circ) = E[W(M)] / E[W(M^circ)]
+        if w_oracle_mean > 0:
+            eff_mean = float(w_mean / w_oracle_mean)
+        else:
+            eff_mean = 1.0 if np.isclose(w_mean, 0.0) else 0.0
 
         inc_cost_mean = (
             float(np.mean(trackers["Mechanism M"]["inc_cost"])) if name == "Mechanism M" else 0.0
