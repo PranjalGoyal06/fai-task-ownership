@@ -6,6 +6,8 @@ Prepared on 19 November 2026 for the teammate implementing E2. This document spe
 
 The research question is whether semantic evidence improves ownership prediction over lexical evidence, and whether those improvements increase welfare under the same incentive mechanisms. More informed probabilities and higher welfare are hypotheses to test. The experiment can produce a null or negative result.
 
+**Implementation qualification:** the current citation validator checks module scope, source text, and retrieval-range matching. It does not determine whether a generated natural-language claim is relevant to or entailed by its citation. Until claim support is independently assessed, describe these as source-matched LLM claims/features, not verified semantic evidence, and do not use citation acceptance alone to support a semantic-understanding claim.
+
 **Branch workflow**
 
 Develop E2 on a new branch named `feat/llm-evidence-experiment`, starting from the current E1 branch, `feat/github-issue-experiment`. This gives the E2 teammate the dataset, calibrated predictors, reporting game, and evaluation already developed for E1.
