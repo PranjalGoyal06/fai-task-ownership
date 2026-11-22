@@ -16,22 +16,23 @@ def sample_evidence():
 def test_aligned_agent_is_truthful(sample_evidence):
     agent = StrategicAgent(agent_id=0, base_ell=0.0)
     config = MechanismConfig(score_scale=1.0)
-    report = agent.compute_report(sample_evidence, config, degree_m=2)
+    report, is_tampered = agent.compute_report(sample_evidence, config, degree_m=2)
     assert np.isclose(report.r, sample_evidence.pi_hat)
-    assert not report.payload.is_tampered_ground_truth
+    assert not is_tampered
+    assert not sample_evidence.payload.is_tampered_ground_truth
 
 
 def test_deflector_shades_down(sample_evidence):
     agent = StrategicAgent(agent_id=1, base_ell=2.0)  # Deflector
     config = MechanismConfig(score_scale=2.0)
-    report = agent.compute_report(sample_evidence, config, degree_m=2)
+    report, _ = agent.compute_report(sample_evidence, config, degree_m=2)
     assert report.r < sample_evidence.pi_hat, "Deflector must shade report downwards"
 
 
 def test_acquirer_shades_up(sample_evidence):
     agent = StrategicAgent(agent_id=2, base_ell=-2.0)  # Acquirer
     config = MechanismConfig(score_scale=2.0)
-    report = agent.compute_report(sample_evidence, config, degree_m=2)
+    report, _ = agent.compute_report(sample_evidence, config, degree_m=2)
     assert report.r > sample_evidence.pi_hat, "Acquirer must shade report upwards"
 
 
@@ -40,8 +41,8 @@ def test_score_scale_disciplines_shading(sample_evidence):
     config_weak = MechanismConfig(score_scale=0.5)
     config_strong = MechanismConfig(score_scale=10.0)
 
-    report_weak = agent.compute_report(sample_evidence, config_weak, degree_m=2)
-    report_strong = agent.compute_report(sample_evidence, config_strong, degree_m=2)
+    report_weak, _ = agent.compute_report(sample_evidence, config_weak, degree_m=2)
+    report_strong, _ = agent.compute_report(sample_evidence, config_strong, degree_m=2)
 
     # Stronger scoring forces report closer to truth
     assert abs(report_strong.r - sample_evidence.pi_hat) < abs(report_weak.r - sample_evidence.pi_hat)
@@ -52,8 +53,10 @@ def test_no_scoring_extreme_reports(sample_evidence):
     acquirer = StrategicAgent(agent_id=2, base_ell=-1.5)
     config_no_scoring = MechanismConfig(score_scale=0.0)
 
-    assert deflector.compute_report(sample_evidence, config_no_scoring, degree_m=2).r == 0.0
-    assert acquirer.compute_report(sample_evidence, config_no_scoring, degree_m=2).r == 1.0
+    rep_deflect, _ = deflector.compute_report(sample_evidence, config_no_scoring, degree_m=2)
+    rep_acquire, _ = acquirer.compute_report(sample_evidence, config_no_scoring, degree_m=2)
+    assert rep_deflect.r == 0.0
+    assert rep_acquire.r == 1.0
 
 
 def test_audit_penalty_deters_tampering(sample_evidence):
@@ -68,18 +71,27 @@ def test_audit_penalty_deters_tampering(sample_evidence):
     assert agent.decide_tampering(sample_evidence, config_strict, degree_m=3) is False
 
 
+def test_missing_evidence_cannot_tamper():
+    payload = EvidencePayload(claimed_signal=0.1, is_tampered_ground_truth=False)
+    ev = Evidence(agent_id=0, raw_signal=None, pi_true=0.1, pi_hat=0.1, payload=payload)
+    agent = StrategicAgent(agent_id=1, base_ell=3.0)
+    config = MechanismConfig(score_scale=0.0, audit_rate=0.0, audit_penalty=0.0)
+    assert agent.decide_tampering(ev, config, degree_m=3) is False
+
+
 def test_tampering_alters_claimed_signal(sample_evidence):
     deflector = StrategicAgent(agent_id=1, base_ell=3.0)
     acquirer = StrategicAgent(agent_id=2, base_ell=-3.0)
     config_lax = MechanismConfig(score_scale=0.0, audit_rate=0.0, audit_penalty=0.0)
 
-    rep_deflect = deflector.compute_report(sample_evidence, config_lax, degree_m=2)
-    rep_acquire = acquirer.compute_report(sample_evidence, config_lax, degree_m=2)
+    rep_deflect, is_tampered_deflect = deflector.compute_report(sample_evidence, config_lax, degree_m=2)
+    rep_acquire, is_tampered_acquire = acquirer.compute_report(sample_evidence, config_lax, degree_m=2)
 
-    assert rep_deflect.payload.is_tampered_ground_truth is True
-    assert rep_deflect.payload.claimed_signal < sample_evidence.payload.claimed_signal
-    assert rep_acquire.payload.is_tampered_ground_truth is True
-    assert rep_acquire.payload.claimed_signal > sample_evidence.payload.claimed_signal
+    assert is_tampered_deflect is True
+    assert sample_evidence.payload.is_tampered_ground_truth is True
+    assert rep_deflect.payload.claimed_signal < 0.5
+    assert is_tampered_acquire is True
+    assert rep_acquire.payload.claimed_signal > 0.5
 
 
 def test_online_learning_assignment_curve():

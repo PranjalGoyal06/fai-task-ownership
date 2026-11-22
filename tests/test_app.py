@@ -1,7 +1,7 @@
 """Automated tests for simulation runner and app configuration."""
 
 import pytest
-from demo_simulation import (
+from src.experiment_cards import (
     COMPARISON_CARDS,
     EXPERIMENT_CARDS,
     build_experiment_config,
@@ -23,13 +23,11 @@ def test_simulation_runner_default_static():
     results = run_full_simulation(config)
 
     assert results is not None
-    assert len(results.summary_df) == 6
+    assert len(results.summary_df) == 4
     assert set(results.summary_df["System"]) == {
         "Oracle (B4)",
-        "Honest (pi_true)",
         "Description (B1)",
         "Polling Router (B2)",
-        "Voting (B3)",
         "Mechanism M",
     }
     assert len(results.task_history) == 15
@@ -45,6 +43,9 @@ def test_simulation_runner_default_static():
     assert "Regret" in mech_row
     assert "Net Welfare" in mech_row
     assert "Incentive Overhead" in mech_row
+    assert oracle_row["Efficiency Ratio (η)"] == 1.0
+    expected_eff = round(mech_row["Welfare (Gross)"] / oracle_row["Welfare (Gross)"], 3)
+    assert mech_row["Efficiency Ratio (η)"] == expected_eff
 
 
 def test_simulation_runner_dynamic_mode():
@@ -75,7 +76,23 @@ def test_simulation_runner_disjunctive_rule():
         seed=77,
     )
     results = run_full_simulation(config)
-    assert len(results.summary_df) == 6
+    assert len(results.summary_df) == 5
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"num_agents": 101}, "num_agents"),
+        ({"deflector_ratio": 0.7, "acquirer_ratio": 0.5}, "deflector_ratio"),
+        ({"cost_per_audit": -0.1}, "cost_per_audit"),
+        ({"task_noise_sigma": -0.2}, "task_noise_sigma"),
+    ],
+)
+def test_simulation_config_rejects_invalid_domains(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        config_kwargs = {"num_rounds": 1, "num_agents": 4}
+        config_kwargs.update(kwargs)
+        SimulationConfig(**config_kwargs)
 
 
 def test_parameter_sweep_runner():

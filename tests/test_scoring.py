@@ -34,3 +34,20 @@ def test_centered_brier_score_zero_expectation_at_prior():
     # Expected centered score: E[s_tilde(pi0, z)]
     exp_centered = p_true * mech.centered_brier_score(pi0, 1, pi0) + (1 - p_true) * mech.centered_brier_score(pi0, 0, pi0)
     assert np.isclose(exp_centered, 0.0, atol=1e-7)
+
+
+def test_compute_all_scores_accepts_vector_priors():
+    """Verify compute_all_scores works with heterogeneous per-agent priors pi_i^0."""
+    from src.types import PublicPayload, PublicReport
+    config = MechanismConfig(score_scale=2.0)
+    mech = AssignmentMechanism(config)
+    reports = {
+        0: PublicReport(0, 0.8, PublicPayload(0.8)),
+        1: PublicReport(1, 0.2, PublicPayload(0.2)),
+    }
+    z_vector = np.array([1, 0])
+    pi0_vec = np.array([0.5, 0.1])
+    scores = mech.compute_all_scores(reports, z_vector, pi0_vec)
+    assert 0 in scores and 1 in scores
+    # Score for agent 0: 2.0 * [-(1 - 0.8)^2 + (1 - 0.5)^2] = 2.0 * [-0.04 + 0.25] = 2.0 * 0.21 = 0.42
+    assert np.isclose(scores[0], 0.42)

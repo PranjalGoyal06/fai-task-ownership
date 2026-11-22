@@ -17,3 +17,6 @@ dist/
 # Outputs & plots
 *.png
 results/
+
+
+*.tex

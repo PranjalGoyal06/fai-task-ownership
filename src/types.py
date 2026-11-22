@@ -33,11 +33,21 @@ class Task:
 
 
 @dataclass
+class PublicPayload:
+    """Publicly visible evidence artifact payload attached to a public report.
+
+    Contains ONLY the claimed signal / proof artifact, strictly maintaining
+    the information boundary so mechanisms and baselines cannot peek at ground truth.
+    """
+    claimed_signal: float
+
+
+@dataclass
 class EvidencePayload:
-    """Verifiable artifact payload attached to an evidence report.
+    """Verifiable artifact payload attached to private agent evidence.
     
-    is_tampered_ground_truth is private to the simulator / agent state,
-    and is NEVER exposed directly to the selection mechanism.
+    is_tampered_ground_truth is strictly private to the simulator / agent state,
+    and is NEVER exposed directly in public reports or to the selection mechanism.
     """
     claimed_signal: float
     is_tampered_ground_truth: bool = False
@@ -58,7 +68,7 @@ class PublicReport:
     """What the agent actually submits to the central mechanism."""
     agent_id: int
     r: float                     # reported probability in [0, 1]
-    payload: EvidencePayload     # submitted payload (mechanism inspects only via audits)
+    payload: PublicPayload       # public payload (contains only claimed_signal)
 
 
 @dataclass
@@ -70,28 +80,3 @@ class MechanismConfig:
     audit_penalty: float = 5.0         # F >= 0
     credit_rule: CreditRule = CreditRule.SHAPLEY
     cost_per_audit: float = 0.1        # c_a: compute/log inspection cost per audited agent
-
-
-# @dataclass
-# class RoundResult:
-#     """Outcome and economics of one task assignment round."""
-#     task_id: int
-#     assigned_set: set[int]
-#     resolved: bool
-#     V: float                           # 1.0 if resolved else 0.0
-#     social_cost: float                 # sum_{i in A} c_i
-#     social_welfare: float              # R * V - social_cost
-#     oracle_assigned_set: set[int]
-#     oracle_resolved: bool
-#     oracle_social_welfare: float       # W(M^circ)
-#     regret: float                      # W(M^circ) - W(M)
-#     miss_loss: float                   # R * [V(A^circ) - V(A)]
-#     excess_cost: float                 # c(A) - c(A^circ)
-#     efficiency_ratio: float            # W(M) / W(M^circ)
-#     brier_scores: dict[int, float]     # centered Brier scores s_tilde_i
-#     credits: dict[int, float]          # credit chi_i paid
-#     penalties: dict[int, float]        # audit penalties F paid
-#     audited_agents: list[int]
-#     contradicted_agents: list[int]
-#     total_incentive_cost: float        # lambda * sum(s_tilde) + c_a * alpha * N
-#     agent_utilities: dict[int, float]  # U_i realized utility

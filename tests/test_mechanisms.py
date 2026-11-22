@@ -8,8 +8,8 @@ import pytest
 
 from src.mechanisms import AssignmentMechanism
 from src.types import (
-    EvidencePayload,
     MechanismConfig,
+    PublicPayload,
     PublicReport,
     ResolutionRule,
     Task,
@@ -33,10 +33,10 @@ def test_escalation_rule_stops_at_first_required():
     # Sorted order of r/c: Agent 0 (0.9), Agent 2 (0.8), Agent 1 (0.4), Agent 3 (0.1)
     # Agent 2 is in S_star, so escalation should stop after assigning Agent 0 and Agent 2!
     reports = {
-        0: PublicReport(0, 0.9, EvidencePayload(0.9)),
-        1: PublicReport(1, 0.4, EvidencePayload(0.4)),
-        2: PublicReport(2, 0.8, EvidencePayload(0.8)),
-        3: PublicReport(3, 0.1, EvidencePayload(0.1)),
+        0: PublicReport(0, 0.9, PublicPayload(0.9)),
+        1: PublicReport(1, 0.4, PublicPayload(0.4)),
+        2: PublicReport(2, 0.8, PublicPayload(0.8)),
+        3: PublicReport(3, 0.1, PublicPayload(0.1)),
     }
 
     mech = AssignmentMechanism(MechanismConfig())
@@ -59,10 +59,10 @@ def test_conjunctive_set_selection_balances_value_and_costs():
 
     # Agent 0 and 1 have high reports (0.95), while Agent 2 and 3 have near 0 reports (0.01)
     reports = {
-        0: PublicReport(0, 0.95, EvidencePayload(0.95)),
-        1: PublicReport(1, 0.95, EvidencePayload(0.95)),
-        2: PublicReport(2, 0.01, EvidencePayload(0.01)),
-        3: PublicReport(3, 0.01, EvidencePayload(0.01)),
+        0: PublicReport(0, 0.95, PublicPayload(0.95)),
+        1: PublicReport(1, 0.95, PublicPayload(0.95)),
+        2: PublicReport(2, 0.01, PublicPayload(0.01)),
+        3: PublicReport(3, 0.01, PublicPayload(0.01)),
     }
 
     mech = AssignmentMechanism(MechanismConfig())
@@ -77,15 +77,18 @@ def test_graph_audits_detection_frequency():
 
     # Center node 0 (degree 5) tampered with its payload
     reports = {
-        0: PublicReport(0, 0.9, EvidencePayload(0.9, is_tampered_ground_truth=True)),
-        1: PublicReport(1, 0.1, EvidencePayload(0.1, is_tampered_ground_truth=False)),
+        0: PublicReport(0, 0.9, PublicPayload(0.9)),
+        1: PublicReport(1, 0.1, PublicPayload(0.1)),
     }
+    tampered_flags = {0: True, 1: False}
 
     rng = np.random.default_rng(123)
     contradiction_count = 0
     runs = 1000
     for _ in range(runs):
-        penalties, audited, contradicted, cost = mech.execute_audits(reports, G, rng)
+        penalties, audited, contradicted, cost = mech.execute_audits(
+            reports, G, rng, tampered_flags=tampered_flags
+        )
         if 0 in contradicted:
             contradiction_count += 1
         assert 1 not in contradicted, "Untampered agent must never be contradicted"
@@ -95,9 +98,28 @@ def test_graph_audits_detection_frequency():
     assert np.isclose(empirical_q0, 0.922, atol=0.03)
 
 
+def test_escalation_skips_zero_reports():
+    costs = np.ones(4)
+    task = Task(
+        task_id=10,
+        t_embedding=np.zeros(4),
+        root_module=1,
+        S_star={1},
+        z=np.array([0, 1, 0, 0]),
+        R=10.0,
+        costs=costs,
+        rule=ResolutionRule.DISJUNCTIVE,
+    )
+    # All agents deflect with 0.0
+    reports = {i: PublicReport(i, 0.0, PublicPayload(0.0)) for i in range(4)}
+    mech = AssignmentMechanism(MechanismConfig())
+    assigned = mech.select_agents(task, reports)
+    assert assigned == set(), "Agents with 0.0 report must not be assigned in escalation"
+
+
 def test_escalation_tiebreak_is_randomized():
     costs = np.ones(6)
-    # Only agent 5 is the true owner; all reports are tied at 0.0
+    # Only agent 5 is the true owner; all reports are tied at 0.5
     task = Task(
         task_id=3,
         t_embedding=np.zeros(6),
@@ -108,14 +130,14 @@ def test_escalation_tiebreak_is_randomized():
         costs=costs,
         rule=ResolutionRule.DISJUNCTIVE,
     )
-    reports = {i: PublicReport(i, 0.0, EvidencePayload(0.0)) for i in range(6)}
+    reports = {i: PublicReport(i, 0.5, PublicPayload(0.5)) for i in range(6)}
     mech = AssignmentMechanism(MechanismConfig())
 
     assigned_sizes = {
         len(mech.select_agents(task, reports, rng=np.random.default_rng(seed)))
         for seed in range(25)
     }
-    # Deterministic index tie-breaking would always visit 0..5 -> size 6 every time.
+    # Randomized tie-breaking visits agents in different orders, stopping at agent 5
     assert len(assigned_sizes) > 1
 
 
@@ -134,7 +156,7 @@ def test_vectorized_conjunctive_matches_combinatorial_search():
         costs=costs,
         rule=ResolutionRule.CONJUNCTIVE,
     )
-    reports = {i: PublicReport(i, float(r_vals[i]), EvidencePayload(float(r_vals[i]))) for i in range(N)}
+    reports = {i: PublicReport(i, float(r_vals[i]), PublicPayload(float(r_vals[i]))) for i in range(N)}
     mech = AssignmentMechanism(MechanismConfig())
 
     assigned = mech.select_agents(task, reports)

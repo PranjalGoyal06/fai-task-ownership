@@ -29,7 +29,6 @@ class AssignmentMechanism:
         self,
         task: Task,
         reports: dict[int, PublicReport],
-        graph: nx.Graph | None = None,
         rng: np.random.Generator | None = None,
     ) -> set[int]:
         """Selects assigned set A subseteq [N] based on task resolution rule."""
@@ -52,6 +51,8 @@ class AssignmentMechanism:
         for i in range(N):
             c_i = max(task.costs[i], 1e-4)
             r_i = reports[i].r
+            if r_i <= 0.0:
+                continue
             r_over_c.append((r_i / c_i, float(tie_rng.random()), i))
 
         r_over_c.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -144,12 +145,13 @@ class AssignmentMechanism:
         self,
         reports: dict[int, PublicReport],
         z_vector: np.ndarray,
-        base_rate_pi0: float,
+        base_rate_pi0: float | np.ndarray,
     ) -> dict[int, float]:
         """Calculates scaled centered Brier scores: lambda * s_tilde_i for all agents."""
         scores = {}
         for i, rep in reports.items():
-            s_tilde = self.centered_brier_score(rep.r, int(z_vector[i]), base_rate_pi0)
+            pi0_i = float(base_rate_pi0[i]) if isinstance(base_rate_pi0, np.ndarray) else float(base_rate_pi0)
+            s_tilde = self.centered_brier_score(rep.r, int(z_vector[i]), pi0_i)
             scores[i] = float(self.config.score_scale * s_tilde)
         return scores
 
@@ -162,13 +164,14 @@ class AssignmentMechanism:
         reports: dict[int, PublicReport],
         graph: nx.Graph,
         rng: np.random.Generator,
+        tampered_flags: dict[int, bool] | None = None,
     ) -> tuple[dict[int, float], list[int], list[int], float]:
         """Executes stochastic audits along dependency graph G.
 
         Audit target selection (`rng.random() < audit_rate`) is blind to tampering.
-        `is_tampered_ground_truth` is used only inside an audit to simulate whether
-        cross-checking neighbor telemetry uncovers a contradiction (probability
-        1 - (1 - delta)^deg(i) when tampered, 0 otherwise).
+        `tampered_flags` (provided by the simulator oracle) is used inside an audit
+        to simulate whether cross-checking neighbor telemetry uncovers a contradiction
+        (probability 1 - (1 - delta)^deg(i) when tampered, 0 otherwise).
 
         Returns:
         - penalties: dict of penalty amount per agent
@@ -188,8 +191,9 @@ class AssignmentMechanism:
             if rng.random() < self.config.audit_rate:
                 audited_agents.append(i)
 
-                # If the agent secretly tampered with its payload, inspect neighbors
-                if rep.payload.is_tampered_ground_truth:
+                # Cross-check neighbor telemetry if the agent secretly tampered with its payload
+                is_tampered = bool(tampered_flags.get(i, False)) if tampered_flags is not None else False
+                if is_tampered:
                     neighbors = list(graph.neighbors(i))
                     contradicted = False
                     for _ in neighbors:

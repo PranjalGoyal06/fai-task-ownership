@@ -5,7 +5,7 @@ import pytest
 
 from src.baselines import DescriptionRouterB1, PollingRouterB2, VotingDeciderB3
 from src.environment import RepositoryEnvironment, TaskGenerator
-from src.types import EvidencePayload, PublicReport, ResolutionRule
+from src.types import PublicPayload, PublicReport, ResolutionRule
 
 
 def test_description_router_degrades_with_staleness():
@@ -42,7 +42,7 @@ def test_voting_decider_returns_plurality_winner_without_report_leakage():
 
     # Even if non-owners don't know owner's report, public profiles point toward owner
     reports = {
-        i: PublicReport(i, 0.95 if i == owner else 0.05, EvidencePayload(0.5))
+        i: PublicReport(i, 0.95 if i == owner else 0.05, PublicPayload(0.5))
         for i in range(5)
     }
     b3 = VotingDeciderB3(env.profiles, peer_noise_sigma=0.05, seed=42)
@@ -51,7 +51,7 @@ def test_voting_decider_returns_plurality_winner_without_report_leakage():
     # Verify agent i does NOT leak peer reports r_j: if we change owner's report to 0.0,
     # non-owners (j != owner) still vote for owner based on public capability match!
     reports_deflect = dict(reports)
-    reports_deflect[owner] = PublicReport(owner, 0.0, EvidencePayload(0.0))
+    reports_deflect[owner] = PublicReport(owner, 0.0, PublicPayload(0.0))
     b3_2 = VotingDeciderB3(env.profiles, peer_noise_sigma=0.05, seed=42)
     assert b3_2.select(task, reports_deflect) == {owner}
 

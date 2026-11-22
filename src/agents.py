@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.types import Evidence, EvidencePayload, MechanismConfig, PublicReport
+from src.types import Evidence, EvidencePayload, MechanismConfig, PublicPayload, PublicReport
 
 
 class StrategicAgent:
@@ -91,6 +91,10 @@ class StrategicAgent:
         degree_m: int,
     ) -> bool:
         """Evaluates whether to tamper with the private evidence payload."""
+        # Cannot tamper if local evidence is missing
+        if evidence.raw_signal is None:
+            return False
+
         # Aligned agents never tamper
         if abs(self.effective_ell) < 1e-4:
             return False
@@ -114,8 +118,13 @@ class StrategicAgent:
         evidence: Evidence,
         config: MechanismConfig,
         degree_m: int,
-    ) -> PublicReport:
-        """Computes strategic report r_i and generates submitted public report."""
+    ) -> tuple[PublicReport, bool]:
+        """Computes strategic report r_i and generates submitted public report.
+
+        Returns:
+        - report: PublicReport containing public payload (blind to ground-truth tampering)
+        - is_tampered: bool indicating ground-truth tampering status for simulator audit oracle
+        """
         eff_ell = self.effective_ell
         pi_hat = evidence.pi_hat
 
@@ -144,16 +153,18 @@ class StrategicAgent:
             # Forge claimed signal to match deflection (low) or acquisition (high)
             claimed_signal = self.tamper_deflect_signal if eff_ell > 0 else self.tamper_acquire_signal
 
-        submitted_payload = EvidencePayload(
-            claimed_signal=float(claimed_signal),
-            is_tampered_ground_truth=should_tamper,
-        )
+        # Update private evidence payload state
+        evidence.payload.is_tampered_ground_truth = should_tamper
 
-        return PublicReport(
+        # Construct public payload (containing only claimed_signal)
+        submitted_payload = PublicPayload(claimed_signal=float(claimed_signal))
+
+        report = PublicReport(
             agent_id=self.agent_id,
             r=float(r),
             payload=submitted_payload,
         )
+        return report, should_tamper
 
     def record_round_outcome(
         self,

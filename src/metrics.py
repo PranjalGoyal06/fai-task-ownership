@@ -10,6 +10,7 @@ from src.types import (
     Evidence,
     EvidencePayload,
     MechanismConfig,
+    PublicPayload,
     PublicReport,
     ResolutionRule,
     Task,
@@ -88,9 +89,8 @@ class MetricsEvaluator:
             i: PublicReport(
                 agent_id=i,
                 r=float(ev.pi_true),
-                payload=EvidencePayload(
+                payload=PublicPayload(
                     claimed_signal=float(ev.pi_true),
-                    is_tampered_ground_truth=False,
                 ),
             )
             for i, ev in evidence_dict.items()
@@ -158,7 +158,7 @@ class MetricsEvaluator:
         n_bins: int = 10,
     ) -> float:
         """Computes Expected Calibration Error (ECE) over predicted probabilities and binary labels."""
-        p = np.asarray(probs, dtype=float)
+        p = np.clip(np.asarray(probs, dtype=float), 0.0, 1.0)
         y = np.asarray(labels, dtype=float)
         if len(p) == 0:
             return 0.0
@@ -181,7 +181,7 @@ class MetricsEvaluator:
         labels: Sequence[int | float] | np.ndarray,
     ) -> float:
         """Computes mean proper Brier score 1 - (z - r)^2 (higher is better, max 1.0)."""
-        p = np.asarray(probs, dtype=float)
+        p = np.clip(np.asarray(probs, dtype=float), 0.0, 1.0)
         y = np.asarray(labels, dtype=float)
         if len(p) == 0:
             return 0.0
@@ -195,6 +195,7 @@ class MetricsEvaluator:
         credits: dict[int, float],
         penalties: dict[int, float],
         audit_cost: float,
+        tampered_flags: dict[int, bool] | None = None,
     ) -> dict[str, float]:
         """Summarizes mechanism transfers, audit cost, tampering rate, and owner credit share."""
         total_score = float(sum(scores.values()))
@@ -203,7 +204,10 @@ class MetricsEvaluator:
         audit_cost_f = float(audit_cost)
 
         num_agents = len(reports)
-        tampered_count = sum(1 for rep in reports.values() if rep.payload.is_tampered_ground_truth)
+        if tampered_flags is not None:
+            tampered_count = sum(1 for is_t in tampered_flags.values() if is_t)
+        else:
+            tampered_count = 0
         tampering_rate = float(tampered_count / num_agents) if num_agents > 0 else 0.0
 
         owner_credit = sum(credits.get(s, 0.0) for s in task.S_star)

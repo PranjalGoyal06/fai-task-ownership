@@ -28,11 +28,11 @@ class SimulationConfig:
 
     # 1. General & Simulation
     num_rounds: int = 100
-    num_agents: int = 12
+    num_agents: int = 10
     seed: int = 42
 
     # 2. Agent Population & Misalignment Regime
-    agent_regime: str = "mixed"  # "mixed", "deflection", "acquisition", "custom"
+    agent_regime: str = "mixed"  # "mixed", "deflection", "acquisition", "aligned", "custom"
     deflector_ratio: float = 0.3
     acquirer_ratio: float = 0.3
     neutral_ratio: float = 0.4
@@ -95,6 +95,64 @@ class SimulationConfig:
     agent_tamper_acquire_signal: float = 1.0
     agent_fp_iterations: int = 8
 
+    def __post_init__(self) -> None:
+        """Fail fast when configuration values violate model domains."""
+        if self.seed < 0:
+            raise ValueError("seed must be non-negative")
+        if not 1 <= self.num_rounds:
+            raise ValueError("num_rounds must be at least 1")
+        if not 1 <= self.num_agents <= 100:
+            raise ValueError("num_agents must be between 1 and 100")
+        if not 0.0 <= self.deflector_ratio <= 1.0:
+            raise ValueError("deflector_ratio must be between 0 and 1")
+        if not 0.0 <= self.acquirer_ratio <= 1.0:
+            raise ValueError("acquirer_ratio must be between 0 and 1")
+        if self.deflector_ratio + self.acquirer_ratio > 1.0:
+            raise ValueError("deflector_ratio + acquirer_ratio must not exceed 1")
+        if self.deflector_ell < 0.0:
+            raise ValueError("deflector_ell must be non-negative")
+        if self.acquirer_ell > 0.0:
+            raise ValueError("acquirer_ell must be non-positive")
+        if self.reward_per_owner < 0.0 or self.resolution_reward < 0.0:
+            raise ValueError("task rewards must be non-negative")
+        if self.default_cost < 0.0:
+            raise ValueError("default_cost must be non-negative")
+        if self.task_noise_sigma < 0.0:
+            raise ValueError("task_noise_sigma must be non-negative")
+        if not 0.0 <= self.audit_rate <= 1.0:
+            raise ValueError("audit_rate must be between 0 and 1")
+        if not 0.0 <= self.audit_detection_delta <= 1.0:
+            raise ValueError("audit_detection_delta must be between 0 and 1")
+        if self.audit_penalty < 0.0:
+            raise ValueError("audit_penalty must be non-negative")
+        if self.cost_per_audit < 0.0:
+            raise ValueError("cost_per_audit must be non-negative")
+        if not 0.0 <= self.missing_evidence_prob <= 1.0:
+            raise ValueError("missing_evidence_prob must be between 0 and 1")
+        if self.obs_noise_sigma < 0.0:
+            raise ValueError("obs_noise_sigma must be non-negative")
+        if self.b1_desc_noise_sigma < 0.0 or self.b3_peer_noise_sigma < 0.0:
+            raise ValueError("baseline noise values must be non-negative")
+        if self.agent_online_lr < 0.0:
+            raise ValueError("agent_online_lr must be non-negative")
+        if not 0.0 <= self.score_scale:
+            raise ValueError("score_scale must be non-negative")
+        if not 0.0 <= self.cluster_prob <= 1.0:
+            raise ValueError("cluster_prob must be between 0 and 1")
+        if not 0.0 <= self.hop_decay <= 1.0:
+            raise ValueError("hop_decay must be between 0 and 1")
+        if not 0.0 < self.calibration_kappa:
+            raise ValueError("calibration_kappa must be positive")
+        if not 0.0 <= self.b1_staleness_rho <= 1.0:
+            raise ValueError("b1_staleness_rho must be between 0 and 1")
+        if self.use_coalition_range:
+            if not 1 <= self.coalition_min <= self.coalition_max:
+                raise ValueError("coalition bounds must satisfy 1 <= min <= max <= num_agents")
+            self.coalition_min = min(self.coalition_min, self.num_agents)
+            self.coalition_max = min(self.coalition_max, self.num_agents)
+        elif not 1 <= self.coalition_size_k <= self.num_agents:
+            raise ValueError("coalition_size_k must be between 1 and num_agents")
+
     @property
     def coalition_size_range(self) -> tuple[int, int] | None:
         if self.use_coalition_range:
@@ -128,7 +186,7 @@ PARAMETER_METADATA: dict[str, dict[str, str]] = {
         "symbol": "Regime",
         "name": "Misalignment Regime",
         "category": "Population & Misalignment",
-        "desc": "Population distribution type: mixed, deflection-heavy, acquisition-heavy, or custom.",
+        "desc": "Population distribution type: mixed, deflection, acquisition, aligned, or custom.",
     },
     "deflector_ratio": {
         "symbol": "ϕ_defl",
@@ -428,6 +486,8 @@ def init_agent_population(
         n_acquire = num_agents // 2
         n_neutral = num_agents - n_acquire
         ells = [config.acquirer_ell] * n_acquire + [config.neutral_ell] * n_neutral
+    elif config.agent_regime == "aligned":
+        ells = [config.neutral_ell] * num_agents
     elif config.agent_regime == "custom":
         n_deflect = int(round(config.deflector_ratio * num_agents))
         n_acquire = int(round(config.acquirer_ratio * num_agents))
@@ -546,6 +606,7 @@ def run_full_simulation(
         missing_evidence_prob=config.missing_evidence_prob,
         signal_sensitivity=config.signal_sensitivity,
         signal_midpoint=None if config.use_auto_midpoint else config.signal_midpoint_override,
+        prior_pi0=base_rate_pi0,
         seed=seed,
     )
 
@@ -580,6 +641,7 @@ def run_full_simulation(
         peer_noise_sigma=config.b3_peer_noise_sigma,
         signal_sensitivity=config.signal_sensitivity,
         signal_midpoint=midpoint,
+        prior_pi0=base_rate_pi0,
         seed=seed,
     )
 
@@ -590,7 +652,6 @@ def run_full_simulation(
 
     system_names = [
         "Oracle (B4)",
-        "Honest (pi_true)",
         "Description (B1)",
         "Polling Router (B2)",
         "Voting (B3)",
@@ -647,47 +708,48 @@ def run_full_simulation(
         trackers["Oracle (B4)"]["efficiency"].append(1.0 if o_welfare > 0 else 0.0)
 
         # 2. Reports under Mechanism M (with incentives)
-        reports_M = {
-            i: agents_M[i].compute_report(
+        reports_M = {}
+        tampered_M = {}
+        for i in range(num_agents):
+            rep_m, is_tamp_m = agents_M[i].compute_report(
                 evidence_dict[i],
                 mech_active.config,
                 degree_m=env.get_degree(i),
             )
-            for i in range(num_agents)
-        }
+            reports_M[i] = rep_m
+            tampered_M[i] = is_tamp_m
 
         # 3. Reports under Polling Router B2 (no incentives)
-        reports_B2 = {
-            i: agents_B2[i].compute_report(
+        reports_B2 = {}
+        tampered_B2 = {}
+        for i in range(num_agents):
+            rep_b2, is_tamp_b2 = agents_B2[i].compute_report(
                 evidence_dict[i],
                 config_no_inc,
                 degree_m=env.get_degree(i),
             )
-            for i in range(num_agents)
-        }
+            reports_B2[i] = rep_b2
+            tampered_B2[i] = is_tamp_b2
 
         # Record agent metrics
         for i in range(num_agents):
             agent_reports_M[i].append(reports_M[i].r)
             agent_reports_B2[i].append(reports_B2[i].r)
             agent_pi_true[i].append(evidence_dict[i].pi_true)
-            if reports_M[i].payload.is_tampered_ground_truth:
+            if tampered_M[i]:
                 agent_tampering_count[i] += 1
 
         # 4. Agent Selections across systems
-        A_M = mech_active.select_agents(task, reports_M, env.G, rng=rng)
+        A_M = mech_active.select_agents(task, reports_M, rng=rng)
         A_B1 = b1_router.select(task)
         A_B2 = b2_polling.select(task, reports_B2)
         A_B3 = b3_voting.select(task, reports_B2)
-        A_H, _, _, _ = MetricsEvaluator.compute_truthful_benchmark(task, evidence_dict, rng=rng)
-
         for i in A_M:
             agent_assigned_M[i] += 1
         for i in A_B2:
             agent_assigned_B2[i] += 1
 
         # 5. Regret Decompositions
-        reg_H = MetricsEvaluator.compute_regret_decomposition(task, A_H)
         reg_B1 = MetricsEvaluator.compute_regret_decomposition(task, A_B1)
         reg_B2 = MetricsEvaluator.compute_regret_decomposition(task, A_B2)
         reg_B3 = MetricsEvaluator.compute_regret_decomposition(task, A_B3)
@@ -695,43 +757,41 @@ def run_full_simulation(
 
         # 6. Audits & Scoring for Mechanism M
         penalties, audited_agents, contradicted_agents, audit_cost = mech_active.execute_audits(
-            reports_M, env.G, rng
+            reports_M, env.G, rng, tampered_flags=tampered_M
         )
         scores = mech_active.compute_all_scores(reports_M, task.z, base_rate_pi0)
         credits = mech_active.divide_credit(task, A_M)
         total_inc_cost = sum(scores.values()) + audit_cost
         inc_summary = MetricsEvaluator.compute_incentive_summary(
-            task, reports_M, scores, credits, penalties, audit_cost
+            task, reports_M, scores, credits, penalties, audit_cost, tampered_flags=tampered_M
         )
 
         trackers["Mechanism M"]["inc_cost"].append(total_inc_cost)
         trackers["Mechanism M"]["audit_cost"].append(audit_cost)
         trackers["Mechanism M"]["tampering_rate"].append(inc_summary["tampering_rate"])
 
-        # 7. Update Agent dynamic states
+        # 7. Update Agent dynamic states (record_round_outcome called unconditionally so credit_ema tracks expected credit in static and dynamic modes)
         for i in range(num_agents):
-            if config.dynamic_mode:
-                agents_M[i].record_round_outcome(
-                    credit_earned=credits[i],
-                    penalty_incurred=penalties[i],
-                    was_assigned=(i in A_M),
-                    task_resolved=bool(reg_M["resolved"]),
-                )
+            agents_M[i].record_round_outcome(
+                credit_earned=credits[i],
+                penalty_incurred=penalties[i],
+                was_assigned=(i in A_M),
+                task_resolved=bool(reg_M["resolved"]),
+            )
             agents_M[i].update_assignment_model(reports_M[i].r, was_assigned=(i in A_M))
 
         for i in range(num_agents):
-            if config.dynamic_mode:
-                agents_B2[i].record_round_outcome(
-                    credit_earned=0.0,
-                    penalty_incurred=0.0,
-                    was_assigned=(i in A_B2),
-                    task_resolved=bool(reg_B2["resolved"]),
-                )
+            agents_B2[i].record_round_outcome(
+                credit_earned=0.0,
+                penalty_incurred=0.0,
+                was_assigned=(i in A_B2),
+                task_resolved=bool(reg_B2["resolved"]),
+            )
+            agents_B2[i].update_assignment_model(reports_B2[i].r, was_assigned=(i in A_B2))
             agents_B2[i].update_assignment_model(reports_B2[i].r, was_assigned=(i in A_B2))
 
         # Accumulate metrics
         eval_pairs = [
-            ("Honest (pi_true)", reg_H, A_H),
             ("Description (B1)", reg_B1, A_B1),
             ("Polling Router (B2)", reg_B2, A_B2),
             ("Voting (B3)", reg_B3, A_B3),
@@ -779,7 +839,6 @@ def run_full_simulation(
                     for i in range(num_agents)
                 },
                 "A_Oracle": sorted(list(A_O)),
-                "A_Honest": sorted(list(A_H)),
                 "A_B1": sorted(list(A_B1)),
                 "A_B2": sorted(list(A_B2)),
                 "A_B3": sorted(list(A_B3)),
@@ -795,16 +854,27 @@ def run_full_simulation(
     if progress_callback:
         progress_callback(0.95, "Compiling summary tables and time-series dataframes...")
 
-    # Build Summary Table
+    # Build Summary Table (exclude Voting B3 for conjunctive tasks where plurality single-choice is structurally inapplicable)
+    display_systems = [
+        name
+        for name in system_names
+        if not (config.rule == ResolutionRule.CONJUNCTIVE and name == "Voting (B3)")
+    ]
     summary_data = []
-    for name in system_names:
+    w_oracle_mean = float(np.mean(trackers["Oracle (B4)"]["welfare"]))
+    for name in display_systems:
         w_mean = float(np.mean(trackers[name]["welfare"]))
         reg_mean = float(np.mean(trackers[name]["regret"]))
         miss_mean = float(np.mean(trackers[name]["miss_loss"]))
         exc_mean = float(np.mean(trackers[name]["excess_cost"]))
         res_mean = float(np.mean(trackers[name]["resolved"]))
         cost_mean = float(np.mean(trackers[name]["cost"]))
-        eff_mean = float(np.mean(trackers[name]["efficiency"]))
+
+        # Formal definition from Proposal Eq. 6: eta(M) = W(M) / W(M^circ) = E[W(M)] / E[W(M^circ)]
+        if w_oracle_mean > 0:
+            eff_mean = float(w_mean / w_oracle_mean)
+        else:
+            eff_mean = 1.0 if np.isclose(w_mean, 0.0) else 0.0
 
         inc_cost_mean = (
             float(np.mean(trackers["Mechanism M"]["inc_cost"])) if name == "Mechanism M" else 0.0
@@ -828,6 +898,7 @@ def run_full_simulation(
     summary_df = pd.DataFrame(summary_data)
 
     rounds_df = pd.DataFrame(round_rows)
+    rounds_df = rounds_df[rounds_df["system"].isin(display_systems)].copy()
     # Add cumulative metrics per system
     rounds_df["cum_welfare"] = rounds_df.groupby("system")["welfare"].cumsum()
     rounds_df["cum_regret"] = rounds_df.groupby("system")["regret"].cumsum()

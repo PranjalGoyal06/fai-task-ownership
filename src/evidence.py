@@ -25,10 +25,11 @@ class EvidenceEngine:
     def __init__(
         self,
         env: RepositoryEnvironment,
-        obs_noise_sigma: float = 0.15,
+        obs_noise_sigma: float = 0.1,
         missing_evidence_prob: float = 0.0,  # gamma in [0, 1]
         signal_sensitivity: float = 8.0,     # Bayes log-likelihood slope beta_1
         signal_midpoint: float | None = None, # None adapts as 0.23 * sqrt(2 / k)
+        prior_pi0: float | None = None,      # Ground-truth prior pi_0 (None falls back to |S*|/N)
         seed: int | None = 42,
     ):
         self.env = env
@@ -36,6 +37,7 @@ class EvidenceEngine:
         self.missing_evidence_prob = missing_evidence_prob
         self.signal_sensitivity = signal_sensitivity
         self.signal_midpoint = signal_midpoint
+        self.prior_pi0 = prior_pi0
         self.rng = np.random.default_rng(seed)
 
     def generate_evidence(
@@ -51,9 +53,13 @@ class EvidenceEngine:
           kappa=1 is calibrated, >1 overconfident, <1 underconfident)
         """
         N = self.env.num_agents
-        k = max(1, len(task.S_star))
-        base_rate_pi0 = len(task.S_star) / max(1, N)
+        base_rate_pi0 = (
+            self.prior_pi0
+            if self.prior_pi0 is not None
+            else len(task.S_star) / max(1, N)
+        )
         base_logit = float(logit(base_rate_pi0))
+        k = max(1.0, round(base_rate_pi0 * N)) if self.prior_pi0 is not None else max(1, len(task.S_star))
         midpoint = (
             self.signal_midpoint
             if self.signal_midpoint is not None
