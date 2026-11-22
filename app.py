@@ -189,7 +189,41 @@ def configure_parameters() -> SimulationConfig:
             "b1_staleness_rho": 0.3,
             "seed": 42,
         },
-        "3. Deflection Crisis: On-Call Blame Avoidance (High Miss Loss)": {
+        "3. Specialist Deflection (Disjunctive — Ticket Avoidance, Shows Voting B3)": {
+            "num_rounds": 100,
+            "num_agents": 8,
+            "agent_regime": "deflection",
+            "deflector_ell": 3.0,
+            "score_scale": 2.5,
+            "audit_rate": 0.2,
+            "audit_penalty": 10.0,
+            "rule": ResolutionRule.DISJUNCTIVE,
+            "credit_rule": "SHAPLEY",
+            "use_coalition_range": False,
+            "coalition_size_k": 1,
+            "reward_per_owner": 5.0,
+            "dynamic_mode": False,
+            "b1_staleness_rho": 0.3,
+            "seed": 42,
+        },
+        "4. Reviewer Empire-Building (Disjunctive — PR Grabbing, Shows Voting B3)": {
+            "num_rounds": 100,
+            "num_agents": 8,
+            "agent_regime": "acquisition",
+            "acquirer_ell": -3.0,
+            "score_scale": 2.5,
+            "audit_rate": 0.2,
+            "audit_penalty": 10.0,
+            "rule": ResolutionRule.DISJUNCTIVE,
+            "credit_rule": "SHAPLEY",
+            "use_coalition_range": False,
+            "coalition_size_k": 1,
+            "reward_per_owner": 5.0,
+            "dynamic_mode": False,
+            "b1_staleness_rho": 0.3,
+            "seed": 42,
+        },
+        "5. Multi-Service Deflection Crisis (Conjunctive — High Miss Loss)": {
             "num_rounds": 100,
             "num_agents": 10,
             "agent_regime": "deflection",
@@ -207,7 +241,7 @@ def configure_parameters() -> SimulationConfig:
             "b1_staleness_rho": 0.3,
             "seed": 42,
         },
-        "4. Acquisition Hoarding: Empire-Building & Land Grab (High Excess Cost)": {
+        "6. Multi-Service Acquisition Hoarding (Conjunctive — High Excess Cost)": {
             "num_rounds": 100,
             "num_agents": 10,
             "agent_regime": "acquisition",
@@ -225,7 +259,7 @@ def configure_parameters() -> SimulationConfig:
             "b1_staleness_rho": 0.3,
             "seed": 42,
         },
-        "5. Cross-Module Coalitions: Shapley vs. Equal-Split (RQ3 Credit Sharing)": {
+        "7. Cross-Module Coalitions: Shapley vs. Equal-Split (RQ3 Credit Sharing)": {
             "num_rounds": 100,
             "num_agents": 12,
             "agent_regime": "mixed",
@@ -242,7 +276,7 @@ def configure_parameters() -> SimulationConfig:
             "b1_staleness_rho": 0.3,
             "seed": 42,
         },
-        "6. Dynamic SRE Fatigue & Burnout (Mode 2 Online Learning)": {
+        "8. Dynamic SRE Fatigue & Burnout (Mode 2 Online Learning)": {
             "num_rounds": 150,
             "num_agents": 8,
             "agent_regime": "mixed",
@@ -262,7 +296,7 @@ def configure_parameters() -> SimulationConfig:
             "b1_staleness_rho": 0.3,
             "seed": 42,
         },
-        "7. Legacy Catalog Failure: High Description Staleness (ρ = 0.70)": {
+        "9. Legacy Catalog Failure: High Description Staleness (ρ = 0.70)": {
             "num_rounds": 100,
             "num_agents": 10,
             "agent_regime": "mixed",
@@ -279,7 +313,7 @@ def configure_parameters() -> SimulationConfig:
             "b1_staleness_rho": 0.70,
             "seed": 42,
         },
-        "8. Fully Aligned Baseline: Truthful Reporting (ℓ = 0)": {
+        "10. Fully Aligned Baseline: Truthful Reporting (ℓ = 0)": {
             "num_rounds": 100,
             "num_agents": 10,
             "agent_regime": "aligned",
@@ -296,7 +330,7 @@ def configure_parameters() -> SimulationConfig:
             "b1_staleness_rho": 0.3,
             "seed": 42,
         },
-        "9. Custom Configuration": {},
+        "11. Custom Configuration": {},
     }
 
     selected_preset = st.sidebar.selectbox(
