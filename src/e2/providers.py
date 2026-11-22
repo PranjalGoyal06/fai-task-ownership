@@ -11,7 +11,7 @@ from typing import Protocol
 
 
 class LLMProvider(Protocol):
-    def complete(self, system: str, prompt: str) -> str:
+    def complete(self, system: str, prompt: str, *, temperature: float = 0.0) -> str:
         """Return a provider's text completion."""
 
 
@@ -34,14 +34,14 @@ class OpenAICompatibleProvider:
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY is required for OpenAI-compatible extraction")
 
-    def complete(self, system: str, prompt: str) -> str:
+    def complete(self, system: str, prompt: str, *, temperature: float = 0.0) -> str:
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.0,
+            "temperature": temperature,
             "response_format": {"type": "json_object"},
         }
         request = urllib.request.Request(
@@ -75,14 +75,14 @@ class GeminiProvider:
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY is required for Gemini extraction")
 
-    def complete(self, system: str, prompt: str) -> str:
+    def complete(self, system: str, prompt: str, *, temperature: float = 0.0) -> str:
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.0,
+            "temperature": temperature,
             "response_format": {"type": "json_object"},
         }
         request = urllib.request.Request(
@@ -121,7 +121,7 @@ class OllamaProvider:
         model: str | None = None,
         base_url: str | None = None,
     ):
-        self.model = model or os.getenv("E2_LLM_MODEL") or "qwen3:4b"
+        self.model = model or os.getenv("E2_LLM_MODEL") or "qwen2.5-coder:3b"
         self.base_url = (
             base_url
             or os.getenv("OLLAMA_BASE_URL")
@@ -129,7 +129,7 @@ class OllamaProvider:
         ).rstrip("/")
         self.last_usage: dict[str, int] = {}
 
-    def complete(self, system: str, prompt: str) -> str:
+    def complete(self, system: str, prompt: str, *, temperature: float = 0.0) -> str:
         self.last_usage = {}
         payload = {
             "model": self.model,
@@ -140,7 +140,12 @@ class OllamaProvider:
             "stream": False,
             "format": "json",
             "think": False,
-            "options": {"temperature": 0.0},
+            "options": {
+                "temperature": temperature,
+                "num_predict": int(os.getenv("OLLAMA_NUM_PREDICT", "512")),
+                "num_ctx": int(os.getenv("OLLAMA_NUM_CTX", "12288")),
+                "num_thread": int(os.getenv("OLLAMA_NUM_THREAD", "4")),
+            },
         }
         request = urllib.request.Request(
             f"{self.base_url}/api/chat",
@@ -148,7 +153,8 @@ class OllamaProvider:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=300) as response:
+        timeout = int(os.getenv("OLLAMA_TIMEOUT", "300"))
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
         self.last_usage = {
             "prompt_tokens": int(result["prompt_eval_count"]),

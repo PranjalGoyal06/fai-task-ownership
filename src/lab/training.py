@@ -27,7 +27,8 @@ def fingerprint(value):
 def extract_one(source, case, ownership):
     issue = {k: case[k] for k in ("id", "text", "base")}
     if ownership.roots is not None:
-        return source.evidence(issue, root=ownership.roots, modules=ownership.names, owner=ownership.owner,
+        root = ownership.roots[0] if isinstance(ownership.roots, (list, tuple)) else ownership.roots
+        return source.evidence(issue, root=root, modules=ownership.names, owner=ownership.owner,
                                mentions=ownership.mentions, import_path=lambda p: import_path(p, ownership.roots))
     return source.evidence(issue, root="sklearn", modules=ownership.names,
                            owner=ownership.owner, mentions=ownership.mentions)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 
@@ -56,7 +57,14 @@ def snippets(source, ownership, case, owner, limit=12):
 
 def validate(raw, allowed):
     value = json.loads(raw)
+    if isinstance(value, dict) and "response" in value and isinstance(value["response"], dict):
+        value = {**value["response"], **value}
     probability = value.get("probability") if isinstance(value, dict) else None
+    if isinstance(probability, str):
+        try:
+            probability = float(probability.strip())
+        except ValueError:
+            probability = None
     if isinstance(probability, bool) or not isinstance(probability, (int, float)):
         raise ValueError("Model response has no numeric probability")
     probability = float(probability)
@@ -99,7 +107,8 @@ def django_setup(root: Path):
     cases = []
     for issue in read(inputs / "issues.json"):
         number = int(issue["id"].rsplit("-", 1)[-1])
-        cases.append({**issue, "issue": number, "pr": number, "merge": labels[issue["id"]]["merged"],
+        merged_ts = labels[issue["id"]]["merged"]
+        cases.append({**issue, "issue": number, "pr": number, "merge": merged_ts, "merged": merged_ts,
                       "title": issue["text"].splitlines()[0], "paths": [], "compiled": [],
                       "owners": labels[issue["id"]]["owners"]})
     paths = ["django/db/models", "django/db/backends", "django/contrib/admin", "django/contrib", "django/core",
@@ -110,16 +119,34 @@ def django_setup(root: Path):
             [TRAIN_END, VALID_END])
 
 
-def prepare(scan, groups, cutoffs, *, selected_per_period=10, cache=LAB_CACHE, progress=print,
-            provider: LLMProvider | None = None):
+def prepare(scan, groups, cutoffs, *, selected_per_period=10, max_issue_length=None, cache=LAB_CACHE, progress=print,
+            on_progress=None, provider: LLMProvider | None = None):
     """Return an offline replay input after generating complete owner probabilities."""
-    provider = provider or OllamaProvider(model="qwen3.5:9b-q4_K_M")
+    provider = provider or OllamaProvider(model=os.getenv("E2_LLM_MODEL", "qwen2.5-coder:3b"))
     ownership = Ownership(groups, scan["roots"])
     if scan["cases"] and "owners" in scan["cases"][0]:
         eligible, unmapped = scan["cases"], {}
     else:
         eligible, unmapped = label_cases(scan, ownership)
     cases, unavailable = partition(eligible, cutoffs)
+
+    if max_issue_length is None:
+        env_val = os.getenv("MAX_ISSUE_LENGTH")
+        max_issue_length = int(env_val) if env_val else 5000
+
+    length_excluded = {}
+    if max_issue_length and max_issue_length > 0:
+        filtered_cases = []
+        for case in cases:
+            text_len = len(case.get("text", ""))
+            if case.get("split") in ("validation", "test") and text_len > max_issue_length:
+                length_excluded[case["id"]] = f"issue text exceeds maximum length ({text_len} > {max_issue_length})"
+            else:
+                filtered_cases.append(case)
+        cases = filtered_cases
+    if length_excluded:
+        print(f"Skipping {len(length_excluded)} issues exceeding length threshold of {max_issue_length} chars: {list(length_excluded.keys())}", flush=True)
+
     split = {name: [case for case in cases if case["split"] == name] for name in ("train", "validation", "test")}
     if not split["train"] or not split["validation"] or not split["test"]:
         raise ValueError("Choose dates and owners that retain issues in all three periods.")
@@ -141,12 +168,29 @@ def prepare(scan, groups, cutoffs, *, selected_per_period=10, cache=LAB_CACHE, p
             return destination
         source = Snapshot(Path(scan["source_git"])) if scan.get("source_git") else FileSnapshot(store.directory, scan["roots"])
         records, failures, features = {}, [], {}
+        total_eval_cases = sum(len(selected[name]) for name in ("validation", "test"))
+        total_steps = total_eval_cases * len(names)
+        current_step = 0
         try:
             for period in ("validation", "test"):
                 for case_number, case in enumerate(selected[period], 1):
                     progress(f"Reading source and estimating ownership {case_number}/{len(selected[period])} · {case['id']}")
+                    print(f"\n[LLM] Issue {case_number}/{len(selected[period])} ({period}): {case['id']}", flush=True)
+                    if on_progress:
+                        on_progress({
+                            "type": "issue_start",
+                            "period": period,
+                            "case_number": case_number,
+                            "total_cases": len(selected[period]),
+                            "case_id": case["id"],
+                            "title": case.get("title", ""),
+                            "agents": names,
+                            "overall_step": current_step,
+                            "total_steps": total_steps,
+                        })
                     features[case["id"]] = extract_one(source, case, ownership)
                     for owner, name in enumerate(names):
+                        current_step += 1
                         allowed = snippets(source, ownership, case, owner)
                         system, prompt = direct_prompt(case, name, float(rates[owner]), allowed)
                         signature = fingerprint({"descriptor": descriptor, "issue": case["id"], "base": case["base"],
@@ -154,18 +198,99 @@ def prepare(scan, groups, cutoffs, *, selected_per_period=10, cache=LAB_CACHE, p
                         path = directory / "responses" / (signature + ".json")
                         if path.exists():
                             record = read(path)
+                            prob = float(record.get("probability", 0.0))
+                            print(f"  · {name} ({owner + 1}/{len(names)}): cached (p={prob:.2f})", flush=True)
+                            if on_progress:
+                                on_progress({
+                                    "type": "agent_update",
+                                    "period": period,
+                                    "case_id": case["id"],
+                                    "case_number": case_number,
+                                    "total_cases": len(selected[period]),
+                                    "owner_index": owner,
+                                    "agent": name,
+                                    "status": "cached",
+                                    "probability": prob,
+                                    "elapsed": float(record.get("elapsed_seconds", 0.0)),
+                                    "overall_step": current_step,
+                                    "total_steps": total_steps,
+                                })
                         else:
-                            try:
-                                started = time.perf_counter()
-                                raw_response = provider.complete(system, prompt)
-                                response = validate(raw_response, allowed)
-                                record = {**response, "signature": signature, "issue": case["id"], "owner": owner,
-                                          "elapsed_seconds": time.perf_counter() - started, "prompt": prompt,
-                                          "raw_response": raw_response}
-                                store.json(path, record)
-                            except Exception as error:
-                                failures.append({"issue": case["id"], "owner": name,
-                                                 "error": f"{type(error).__name__}: {error}"})
+                            if on_progress:
+                                on_progress({
+                                    "type": "agent_update",
+                                    "period": period,
+                                    "case_id": case["id"],
+                                    "case_number": case_number,
+                                    "total_cases": len(selected[period]),
+                                    "owner_index": owner,
+                                    "agent": name,
+                                    "status": "calling",
+                                    "probability": None,
+                                    "elapsed": None,
+                                    "overall_step": current_step,
+                                    "total_steps": total_steps,
+                                })
+                            attempts = max(1, int(os.getenv("DIRECT_MODEL_ATTEMPTS", "3")))
+                            started = time.perf_counter()
+                            print(f"  · {name} ({owner + 1}/{len(names)}): calling model ...", end="", flush=True)
+                            for attempt in range(1, attempts + 1):
+                                try:
+                                    temp = 0.0 if attempt == 1 else 0.2
+                                    try:
+                                        raw_response = provider.complete(system, prompt, temperature=temp)
+                                    except TypeError:
+                                        raw_response = provider.complete(system, prompt)
+                                    response = validate(raw_response, allowed)
+                                    elapsed = time.perf_counter() - started
+                                    record = {**response, "signature": signature, "issue": case["id"], "owner": owner,
+                                              "elapsed_seconds": elapsed, "prompt": prompt,
+                                              "raw_response": raw_response,
+                                              "attempt": attempt}
+                                    store.json(path, record)
+                                    print(f" p={response['probability']:.2f} ({elapsed:.2f}s)", flush=True)
+                                    if on_progress:
+                                        on_progress({
+                                            "type": "agent_update",
+                                            "period": period,
+                                            "case_id": case["id"],
+                                            "case_number": case_number,
+                                            "total_cases": len(selected[period]),
+                                            "owner_index": owner,
+                                            "agent": name,
+                                            "status": "done",
+                                            "probability": response["probability"],
+                                            "elapsed": elapsed,
+                                            "overall_step": current_step,
+                                            "total_steps": total_steps,
+                                        })
+                                    time.sleep(0.15)
+                                    break
+                                except Exception as error:
+                                    if attempt < attempts:
+                                        print(f" retry {attempt + 1}/{attempts} after {type(error).__name__} ...", end="", flush=True)
+                                        time.sleep(0.5)
+                                        continue
+                                    print(f" ERROR: {type(error).__name__}: {error}", flush=True)
+                                    failures.append({"issue": case["id"], "owner": name,
+                                                     "error": f"{type(error).__name__}: {error}",
+                                                     "attempts": attempt})
+                                    record = None
+                                    if on_progress:
+                                        on_progress({
+                                            "type": "agent_update",
+                                            "period": period,
+                                            "case_id": case["id"],
+                                            "case_number": case_number,
+                                            "total_cases": len(selected[period]),
+                                            "owner_index": owner,
+                                            "agent": name,
+                                            "status": "error",
+                                            "error": f"{type(error).__name__}: {error}",
+                                            "overall_step": current_step,
+                                            "total_steps": total_steps,
+                                        })
+                            if record is None:
                                 continue
                         records[(case["id"], owner)] = record
         finally:
@@ -197,7 +322,8 @@ def prepare(scan, groups, cutoffs, *, selected_per_period=10, cache=LAB_CACHE, p
                   for owner, name in enumerate(names)]
         manifest = {**descriptor, "preset": "public-python-direct", "modules": names,
                     "ownership": ownership.groups, "split_counts": {name: len(selected[name]) for name in selected},
-                    "model_metrics": metric, "exclusions": {**unmapped, **unavailable},
+                    "model_metrics": metric, "exclusions": {**unmapped, **unavailable, **length_excluded},
+                    "max_issue_length": max_issue_length, "skipped_length_count": len(length_excluded),
                     "probability_source": "direct_model", "pooled_reference": False}
         result = {"format": 1, "manifest": manifest,
                   "issues": [{key: case[key] for key in ("id", "title", "issue", "pr", "base")} for case in test],

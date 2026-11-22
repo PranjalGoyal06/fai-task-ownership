@@ -1,6 +1,7 @@
 """Guided preparation, training and replay for historical repository experiments."""
 from collections import Counter
 from datetime import date
+import os
 from pathlib import Path
 import subprocess
 
@@ -191,9 +192,45 @@ def mapping(scan):
              "Give each agent one or more comma-separated paths. The most specific file or folder wins.")
     edited = st.data_editor([{"Agent": g["name"], "Paths": ", ".join(g["paths"])} for g in initial],
                             num_rows="dynamic", hide_index=True, key="owners_editor", width="stretch")
+
+    all_rows = []
+    for r in (edited if isinstance(edited, list) else edited.to_dict("records")):
+        name = (r.get("Agent") or "").strip()
+        paths = [p.strip() for p in (r.get("Paths") or "").split(",") if p.strip()]
+        all_rows.append({"name": name, "paths": paths})
+
+    del_col, btn_col, reset_col = st.columns([3, 1, 1.2])
+    with del_col:
+        del_idx = st.selectbox(
+            "Select owner to delete",
+            options=list(range(len(all_rows))),
+            format_func=lambda i: f"#{i + 1}: {all_rows[i]['name'] or '(unnamed)'}" + (
+                f" — {', '.join(all_rows[i]['paths'])}" if all_rows[i]['paths'] else ""
+            ),
+            label_visibility="collapsed",
+            key="delete_owner_select",
+            disabled=len(all_rows) == 0,
+        )
+    with btn_col:
+        can_delete = len(all_rows) > 2 and del_idx is not None and 0 <= del_idx < len(all_rows)
+        if st.button("Delete row", disabled=not can_delete, use_container_width=True,
+                     help="Delete the selected module owner row. At least two agents are required."):
+            remaining = [r for idx, r in enumerate(all_rows) if idx != del_idx]
+            st.session_state["setup_groups"] = remaining
+            st.session_state.pop("owners_editor", None)
+            st.rerun()
+    with reset_col:
+        if st.button("Reset suggested", use_container_width=True,
+                     help="Reset module owners to default suggestions."):
+            st.session_state["setup_groups"] = suggestions
+            st.session_state.pop("owners_editor", None)
+            st.rerun()
+
+    st.caption("💡 To delete an owner: choose a row above and click **Delete row**, or select the row's checkbox in the table and click the 🗑️ trash icon in the toolbar (or press Delete).")
+
+    valid_rows = [r for r in all_rows if r["name"] or r["paths"]]
     try:
-        mapping = Ownership([{"name": (r["Agent"] or "").strip(),
-                              "paths": [p.strip() for p in (r["Paths"] or "").split(",") if p.strip()]} for r in edited], roots)
+        mapping = Ownership(valid_rows, roots)
     except ValueError as error:
         st.error(str(error))
         return
@@ -274,14 +311,57 @@ def source(scan):
         st.write("Learn ownership probabilities from earlier issue text and each agent's pre-fix source.")
     else:
         groups, cutoffs = st.session_state["setup_groups"], st.session_state["setup_cutoffs"]
-        retained, _ = partition(label_cases(scan, Ownership(groups, scan.get("roots")))[0], cutoffs)
-        counts = Counter(case["split"] for case in retained)
-        mode = st.radio("Run size", ("Try a small run", "Use all eligible issues"), horizontal=True)
-        selected = min(10, counts["validation"], counts["test"]) if mode == "Try a small run" else max(counts["validation"], counts["test"])
-        st.write("Ask the local model for a probability using the issue and short excerpts from one owner's pre-fix source.")
-        st.caption(f"This run will make up to {selected * 2 * len(groups)} local model calls. "
-                   "Completed calls are saved so a retry resumes where it stopped.")
+        ownership = Ownership(groups, scan.get("roots"))
+        if scan.get("cases") and "owners" in scan["cases"][0]:
+            eligible, _ = scan["cases"], {}
+        else:
+            eligible, _ = label_cases(scan, ownership)
+        retained, unavailable = partition(eligible, cutoffs)
+
+        model_name = os.getenv("E2_LLM_MODEL", "qwen2.5-coder:3b")
+        st.write(f"Ask the local model (**`{model_name}`**) for a probability using the issue and short excerpts from one owner's pre-fix source.")
+
+        default_max_len = int(os.getenv("MAX_ISSUE_LENGTH", "5000"))
+        max_len = st.number_input(
+            "Max issue length (characters)",
+            min_value=500,
+            max_value=50000,
+            value=st.session_state.get("setup_max_issue_length", default_max_len),
+            step=500,
+            help="Issues whose text exceeds this character count are skipped to avoid context overflow and timeouts."
+        )
+
+        valid_eligible = [c for c in retained if c["split"] == "validation" and len(c.get("text", "")) <= max_len]
+        test_eligible = [c for c in retained if c["split"] == "test" and len(c.get("text", "")) <= max_len]
+        skipped_val = sum(1 for c in retained if c["split"] == "validation" and len(c.get("text", "")) > max_len)
+        skipped_test = sum(1 for c in retained if c["split"] == "test" and len(c.get("text", "")) > max_len)
+        total_skipped = skipped_val + skipped_test
+
+        st.caption(f"Length filter excluded **{total_skipped}** issues (> {max_len:,} chars): "
+                   f"{skipped_val} in validation, {skipped_test} in evaluation. "
+                   f"**{len(valid_eligible)}** validation and **{len(test_eligible)}** evaluation issues available.")
+
+        max_selectable = min(len(valid_eligible), len(test_eligible))
+        if max_selectable == 0:
+            st.error("No eligible issues remaining under the current length threshold. Please increase the threshold.")
+            return
+
+        default_size = min(10, max_selectable)
+        selected = st.number_input(
+            "Number of issues to evaluate per period",
+            min_value=1,
+            max_value=max_selectable,
+            value=min(st.session_state.get("setup_direct_size", default_size), max_selectable),
+            step=1,
+            help=f"Select between 1 and {max_selectable} issues for validation and the same number for evaluation (excluding length-filtered issues)."
+        )
+        total_issues = selected * 2
+        total_calls = total_issues * len(groups)
+        st.write(f"Evaluating **{selected}** validation issues and **{selected}** evaluation issues (**{total_issues}** total issues).")
+        st.caption(f"This run will make up to **{total_calls}** local model calls ({len(groups)} agents × {total_issues} issues). "
+                   "Completed calls are saved to disk cache so retries resume instantly.")
         st.session_state["setup_direct_size"] = selected
+        st.session_state["setup_max_issue_length"] = max_len
     if st.button("Continue", type="primary"):
         st.session_state["setup_source"] = "classifier" if choice == "Trained classifier" else "direct"
         stage("training" if choice == "Trained classifier" else "direct")
@@ -313,17 +393,83 @@ def direct(scan):
     st.header("Generate ownership probabilities")
     groups, cutoffs = st.session_state["setup_groups"], st.session_state["setup_cutoffs"]
     selected = st.session_state.get("setup_direct_size", 10)
+    max_len = st.session_state.get("setup_max_issue_length", 5000)
     st.write("The local model receives each issue and short excerpts from the selected owner's code before the fix. "
              "It returns one ownership probability at a time.")
+    st.caption(f"Evaluating **{selected}** issues per period (validation & evaluation) · Max issue length: **{max_len:,}** chars · {len(groups)} agents")
+
     if st.button("Generate probabilities", type="primary"):
         with st.status("Generating local model probabilities", expanded=True) as status:
-            message = st.empty()
+            overall_bar = st.progress(0.0)
+            overall_metric = st.empty()
+            current_issue_box = st.empty()
+            agents_box = st.empty()
+
+            agent_states = {}
+
+            def handle_progress(evt):
+                etype = evt.get("type")
+                if etype == "issue_start":
+                    nonlocal agent_states
+                    agent_states = {a: {"status": "pending", "probability": None, "elapsed": None} for a in evt["agents"]}
+                    current_issue_box.markdown(
+                        f"#### Period: `{evt['period']}` · Issue {evt['case_number']}/{evt['total_cases']}\n"
+                        f"**{evt['case_id']}** — *{evt['title'][:80]}*"
+                    )
+                elif etype == "agent_update":
+                    agent = evt["agent"]
+                    agent_states[agent] = {
+                        "status": evt["status"],
+                        "probability": evt.get("probability"),
+                        "elapsed": evt.get("elapsed"),
+                        "error": evt.get("error"),
+                    }
+                    step = evt["overall_step"]
+                    total = evt["total_steps"]
+                    pct = int((step / total) * 100) if total > 0 else 0
+                    overall_bar.progress(min(1.0, max(0.0, step / total)) if total > 0 else 0.0)
+                    overall_metric.markdown(f"**Overall Progress:** {step}/{total} agent predictions ({pct}%)")
+
+                    lines = ["| Agent | Status | Probability | Time |", "| :--- | :--- | :--- | :--- |"]
+                    for ag_name, st_info in agent_states.items():
+                        s = st_info["status"]
+                        if s == "calling":
+                            badge = "⏳ **Calling model...**"
+                            p_str = "—"
+                            t_str = "—"
+                        elif s == "cached":
+                            p = st_info["probability"]
+                            badge = "⚡ Cached"
+                            p_str = f"`{p:.2f}`" if p is not None else "—"
+                            t_str = "—"
+                        elif s == "done":
+                            p = st_info["probability"]
+                            el = st_info["elapsed"]
+                            badge = "✅ Done"
+                            p_str = f"`{p:.2f}`" if p is not None else "—"
+                            t_str = f"{el:.1f}s" if el is not None else "—"
+                        elif s == "error":
+                            badge = "❌ Error"
+                            p_str = "—"
+                            t_str = "—"
+                        else:
+                            badge = "⏸️ Pending"
+                            p_str = "—"
+                            t_str = "—"
+                        lines.append(f"| {ag_name} | {badge} | {p_str} | {t_str} |")
+                    agents_box.markdown("\n".join(lines))
+
             try:
-                path = prepare_direct(scan, groups, cutoffs, selected_per_period=selected, cache=LAB_CACHE,
-                                      progress=message.write)
+                print(f"\n=== Starting direct probability generation ({selected} issues/period, max_len={max_len}) ===", flush=True)
+                path = prepare_direct(scan, groups, cutoffs, selected_per_period=selected,
+                                      max_issue_length=max_len, cache=LAB_CACHE,
+                                      progress=current_issue_box.write,
+                                      on_progress=handle_progress)
+                print(f"\n=== Direct probability generation complete ===\n", flush=True)
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 status.update(label="Generation incomplete", state="error")
                 st.error(f"{error} Completed responses are available for a retry.")
+                print(f"\n=== Direct probability generation incomplete: {error} ===\n", flush=True)
                 return
             status.update(label="Probabilities ready", state="complete")
         st.session_state["setup_result"] = str(path)
@@ -338,6 +484,12 @@ def results():
     counts = preset.manifest["split_counts"]
     st.write(f"Learned from {counts['train']} changes, calibrated on {counts['validation']}, "
              f"and evaluated on {counts['test']} later changes.")
+
+    skipped_count = preset.manifest.get("skipped_length_count", 0)
+    max_len = preset.manifest.get("max_issue_length")
+    if skipped_count > 0:
+        st.info(f"ℹ️ **Length filtering:** Skipped **{skipped_count}** issues exceeding the threshold of **{max_len:,}** characters to keep LLM context concise.")
+
     if preset.manifest.get("probability_source") == "direct_model":
         st.write("These are probabilities returned directly by the local model. Brier loss is their average squared error. Lower is better.")
     else:

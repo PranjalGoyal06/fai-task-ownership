@@ -215,6 +215,7 @@ def test_ollama_provider_uses_local_structured_chat_endpoint(monkeypatch):
     assert provider.model == "qwen3:4b"
     assert captured["url"] == "http://localhost:11434/api/chat"
     assert captured["authorization"] is None
+    assert captured["timeout"] == 300
     assert json.loads(response)["probability"] == 0.5
     assert provider.last_usage == {
         "prompt_tokens": 12,
