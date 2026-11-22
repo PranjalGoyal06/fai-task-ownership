@@ -1,4 +1,4 @@
-"""Module-restricted, citation-validated LLM evidence extraction."""
+"""Module-restricted LLM evidence extraction with source-matched citations."""
 
 from __future__ import annotations
 
@@ -162,6 +162,7 @@ def validate_findings(
                 {
                     "claim": claim,
                     "evidence_type": finding.get("evidence_type", "semantic"),
+                    "claim_support": "not_verified",
                     "citations": validated,
                 }
             )
@@ -176,7 +177,7 @@ def extract_issue_module(
     module_id: int,
     provider: LLMProvider | None = None,
 ) -> dict:
-    """Extract semantically relevant evidence for one module at one base commit."""
+    """Generate local LLM claims and source-match their citations at one base commit."""
     provider = provider or provider_from_environment()
     toolbox = ModuleToolbox(repository, module_id, issue["base"])
 
@@ -238,6 +239,7 @@ def extract_issue_module(
         "module_id": module_id,
         "findings": accepted,
         "rejected": rejected,
+        "citation_validation": "source_match_only",
         "tool_trace": tool_trace,
         "semantic_features": semantic_features,
         "provider": getattr(provider, "model", type(provider).__name__),

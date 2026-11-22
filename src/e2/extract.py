@@ -48,7 +48,9 @@ def run(
                     "issue_id": issue["id"],
                     "base": issue["base"],
                     "module_id": module_id,
+                    "provider": type(provider).__name__,
                     "model": getattr(provider, "model", type(provider).__name__),
+                    "endpoint": getattr(provider, "base_url", None),
                     "cutoff": os.getenv("E2_MODEL_CUTOFF", "unknown"),
                     "issue_text_hash": hashlib.sha256(
                         issue["text"].encode("utf-8")
@@ -79,6 +81,12 @@ def run(
                     f"E2 extraction failed for {issue['id']} module {module_id}"
                 ) from exc
             record["cache_signature"] = signature
+            record["provider"] = type(provider).__name__
+            record["model"] = getattr(
+                provider, "model", type(provider).__name__
+            )
+            record["endpoint"] = getattr(provider, "base_url", None)
+            record["model_cutoff"] = os.getenv("E2_MODEL_CUTOFF", "unknown")
             output.write_text(json.dumps(record, indent=2), encoding="utf-8")
 
     (directory / "e2-extraction-failures.json").write_text(

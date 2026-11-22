@@ -13,11 +13,13 @@ from src.e1.models import Cases
 from src.e2.evidence import validate_findings
 from src.e2.models import paired_predictors, select_cohort
 from src.e2.providers import GeminiProvider, OllamaProvider, provider_from_environment
+from src.e2.replay import cached_evidence_provenance
 import src.e2.direct as direct_module
 from src.e2.direct import (
     DIRECT_MANIFEST_VERSION,
     base_rates,
     complete_belief_issues,
+    compare_modes,
     direct_prompt,
     replay as replay_direct,
     validate_direct_response,
@@ -95,7 +97,7 @@ def test_finding_cannot_cite_source_not_retrieved():
 
 def test_module_local_citation_is_accepted():
     finding = {
-        "claim": "The local function handles the issue behavior",
+        "claim": "This function encrypts all database values",
         "evidence_type": "trace_match",
         "citations": [
             {
@@ -110,6 +112,33 @@ def test_module_local_citation_is_accepted():
     assert len(accepted) == 1
     assert rejected == []
     assert accepted[0]["citations"][0]["sha256"] == "fixture-digest"
+    assert accepted[0]["claim_support"] == "not_verified"
+
+
+def test_cached_evidence_provenance_uses_records_not_a_fixed_model(tmp_path):
+    issue_cache = tmp_path / "e2_evidence" / "issue"
+    issue_cache.mkdir(parents=True)
+    for module_id in range(len(MODULES)):
+        record = (
+            {
+                "provider": "OllamaProvider",
+                "model": "qwen3:4b",
+                "endpoint": "http://localhost:11434/v1",
+                "model_cutoff": "unknown",
+            }
+            if module_id == 0
+            else {"provider": "gemini-3.5-flash-lite"}
+        )
+        (issue_cache / f"{module_id}.json").write_text(
+            json.dumps(record),
+            encoding="utf-8",
+        )
+
+    provenance = cached_evidence_provenance(tmp_path, ["issue"])
+
+    assert provenance["records"] == len(MODULES)
+    assert provenance["providers"] == ["OllamaProvider", "unspecified"]
+    assert provenance["models"] == ["gemini-3.5-flash-lite", "qwen3:4b"]
 
 
 def test_gemini_retries_transient_server_errors():
@@ -301,6 +330,7 @@ def test_direct_belief_parser_accepts_probability_and_rejects_invalid_value():
     )
     assert valid["probability"] == 0.37
     assert valid["citations"] == []
+    assert valid["citation_validation"] == "source_match_only"
 
     with pytest.raises(ValueError, match="probability"):
         validate_direct_response(
@@ -331,6 +361,7 @@ def test_direct_no_tools_prompt_excludes_patch_and_cits():
     assert "gold patch" in system
     assert "Module: core" in prompt
     assert "A historical issue body" in prompt
+    assert "fixture" not in prompt
     assert "Every citation must be an empty list" in prompt
 
 
@@ -378,7 +409,7 @@ def test_direct_base_rates_use_only_training_labels(tmp_path):
     assert np.all(priors[2:] == 0.0)
 
 
-def test_direct_run_makes_one_cached_record_per_issue_module(tmp_path):
+def test_direct_run_makes_one_cached_record_per_issue_module(tmp_path, monkeypatch):
     class FixtureProvider:
         model = "fixture-direct"
 
@@ -450,6 +481,21 @@ def test_direct_run_makes_one_cached_record_per_issue_module(tmp_path):
     assert manifest["inference_seconds"] == 0.0
     assert manifest["issue_ids"] == ["fixture-issue"]
 
+    monkeypatch.setattr(direct_module, "local_snippets", lambda *_args: [])
+    run_direct(
+        tmp_path,
+        output,
+        repository="fixture-repository",
+        splits=("test",),
+        mode="snippets",
+        provider=provider,
+    )
+    cache_files = list((output / "e2d" / "beliefs").glob("*.json"))
+    assert len(cache_files) == 2 * len(MODULES)
+    assert {path.stem.rsplit("__", 1)[-1] for path in cache_files} == {
+        "no_tools",
+        "snippets",
+    }
 
 def test_direct_run_limits_issues_per_selected_split(tmp_path):
     class FixtureProvider:
@@ -571,7 +617,202 @@ def test_direct_replay_uses_only_complete_test_beliefs_without_validation(tmp_pa
     assert "B4-E1-lexical" in set(replay_rows["config"])
     assert set(replay_rows["regret_reference"]) == {"E1 lexical B4 estimate"}
     assert set(calibration[calibration["split"] == "validation"]["count"]) == {0}
-    assert calibration[
+    assert set(calibration[
         (calibration["split"] == "test") & (calibration["module"] == "overall")
-    ]["count"].item() == len(MODULES)
+    ]["count"]) == {len(MODULES)}
     assert set(summary["efficiency_vs_e1_lexical_b4"].dropna()).issubset({0.0, 1.0})
+
+
+def test_direct_replay_pairs_lexical_controls_once_and_includes_audit_only(
+    tmp_path, monkeypatch
+):
+    issue_ids = ["validation-issue", "test-issue"]
+    cases = Cases(
+        ids=issue_ids,
+        split=np.array(["validation", "test"]),
+        local=np.full((2, len(MODULES)), 0.1),
+        central=np.full((2, len(MODULES)), 0.1),
+        descriptions=np.full((2, len(MODULES)), 0.1),
+        prior=np.full(len(MODULES), 0.1),
+        joint_masks=np.zeros((2, 25), dtype=int),
+        joint_weights=np.full((2, 25), 1 / 25),
+        degree=np.zeros((2, len(MODULES)), dtype=int),
+    )
+    monkeypatch.setattr(direct_module, "predictors", lambda _directory: (cases, None))
+    monkeypatch.setattr(
+        direct_module,
+        "comparators",
+        lambda _cases, mask, _reward: {
+            "B1": np.ones(int(mask.sum()), dtype=int),
+            "B3": np.ones(int(mask.sum()), dtype=int),
+            "B4": np.ones(int(mask.sum()), dtype=int),
+            "central": np.ones(int(mask.sum()), dtype=int),
+        },
+    )
+    monkeypatch.setattr(
+        direct_module,
+        "fit_strategy",
+        lambda probabilities, _outcomes, _degree, _prior, _condition, _seed: (
+            np.zeros((len(MODULES), 4), dtype=int),
+            np.full(len(MODULES), 0.1),
+            {"status": "converged"},
+        ),
+    )
+    (tmp_path / "labels.json").write_text(
+        json.dumps(
+            {
+                "validation-issue": {"owners": [0]},
+                "test-issue": {"owners": [0]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    beliefs = [
+        {
+            "issue": issue_id,
+            "split": split,
+            "module": module_name,
+            "module_id": module_id,
+            "probability": 0.2,
+        }
+        for issue_id, split in zip(issue_ids, ("validation", "test"))
+        for module_id, module_name in enumerate(MODULES)
+    ]
+    pd.DataFrame(beliefs).to_csv(output / "e2d-beliefs.csv", index=False)
+    (output / "e2d-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": DIRECT_MANIFEST_VERSION,
+                "successful_rows": len(beliefs),
+                "issue_ids": issue_ids,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    replay_direct(tmp_path, output)
+
+    replay_rows = pd.read_csv(output / "e2d-replay.csv")
+    diagnostics = json.loads(
+        (output / "e2d-replay-diagnostics.json").read_text(encoding="utf-8")
+    )
+    summary = pd.read_csv(output / "e2d-paired-summary.csv")
+    test_baselines = replay_rows[
+        (replay_rows["split"] == "test")
+        & replay_rows["config"].isin(["B1", "B3", "B4-E1-lexical", "central"])
+    ]
+    counts = test_baselines.groupby(["config", "evidence"]).size()
+    assert set(counts) == {1}
+    assert all(
+        replay_rows[
+            (replay_rows["split"] == "test")
+            & (replay_rows["config"] == "B2-strategic")
+        ]["method"]
+        == "Strategic B2"
+    )
+    assert set(
+        replay_rows[
+            (replay_rows["split"] == "test")
+            & (replay_rows["config"] == "B2-honest")
+        ]["routing_label"]
+    ) == {"B2-direct", "B2-E1-lexical"}
+    audit_only = replay_rows[
+        (replay_rows["split"] == "test")
+        & (replay_rows["ell"].fillna(0) == -1)
+        & np.isclose(replay_rows["phi"].fillna(0), 2 / 3)
+        & (replay_rows["scale"].fillna(-1) == 0)
+        & (replay_rows["audit"].fillna(0) == 0.25)
+    ]
+    assert set(audit_only["evidence"]) == {"direct_llm", "e1_lexical"}
+    assert not any(item["status"] == "mechanism_replay_not_run" for item in diagnostics)
+    assert {
+        "brier_loss",
+        "welfare",
+        "coverage",
+        "padding",
+        "gross_recovery_vs_strategic_b2",
+        "net_recovery_vs_strategic_b2",
+    }.issubset(set(summary["metric"]))
+
+
+def test_mode_comparison_requires_same_cohort_and_reports_paired_brier(tmp_path):
+    mode_dirs = [tmp_path / "no_tools", tmp_path / "snippets"]
+    for mode, directory, probability in (
+        ("no_tools", mode_dirs[0], 0.2),
+        ("snippets", mode_dirs[1], 0.8),
+    ):
+        directory.mkdir()
+        predictions = [
+            {
+                "issue": "test-issue",
+                "split": "test",
+                "module_id": module_id,
+                "probability": probability,
+                "outcome": int(module_id == 0),
+            }
+            for module_id in range(len(MODULES))
+        ]
+        pd.DataFrame(predictions).to_csv(
+            directory / "e2d-predictions.csv",
+            index=False,
+        )
+        pd.DataFrame(
+            [
+                {
+                    "issue": "test-issue",
+                    "split": "test",
+                    "config": "B2-honest",
+                    "method": "Honest routing",
+                    "evidence": "direct_llm",
+                    "welfare": probability,
+                    "coverage": probability,
+                    "padding": 0,
+                    "any_padding": False,
+                }
+            ]
+        ).to_csv(directory / "e2d-replay.csv", index=False)
+        (directory / "e2d-manifest.json").write_text(
+            json.dumps(
+                {
+                    "mode": mode,
+                    "provider": "OllamaProvider",
+                    "model": "qwen3:4b",
+                    "issue_ids": ["test-issue"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    result_path = compare_modes(mode_dirs[1], mode_dirs[0])
+
+    results = pd.read_csv(result_path)
+    brier = results[results["metric"] == "brier_loss"].iloc[0]
+    assert brier["count"] == 1
+    assert brier["mode_a"] == "snippets"
+    assert brier["mode_b"] == "no_tools"
+    assert brier["mode_a_minus_mode_b"] > 0
+
+
+def test_mode_comparison_rejects_mismatched_issue_cohorts(tmp_path):
+    paths = [tmp_path / "a", tmp_path / "b"]
+    for mode, path, issue_id in (
+        ("no_tools", paths[0], "issue-1"),
+        ("snippets", paths[1], "issue-2"),
+    ):
+        path.mkdir()
+        (path / "e2d-manifest.json").write_text(
+            json.dumps(
+                {
+                    "mode": mode,
+                    "provider": "OllamaProvider",
+                    "model": "qwen3:4b",
+                    "issue_ids": [issue_id],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    with pytest.raises(ValueError, match="same selected issue IDs"):
+        compare_modes(paths[0], paths[1])

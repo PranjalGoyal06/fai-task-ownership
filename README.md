@@ -104,9 +104,10 @@ paired lexical-versus-semantic evidence comparison. Live extraction requires
 for Gemini. Set `E2_LLM_MODEL` and optionally `E2_MODEL_CUTOFF` to freeze provider
 identity and contamination metadata.
 
-Semantic extraction is restricted to each module's pre-fix source snapshot. Every
-finding must survive file/line/snippet validation, and extraction failures are
-recorded explicitly. Set `E2_LLM_PROVIDER` to `gemini` or `openai` when both
+Semantic extraction is restricted to each module's pre-fix source snapshot.
+Citation checks match source text, module scope, and retrieval ranges; they do not
+verify that a generated claim is supported by its citation. Extraction failures
+are recorded explicitly. Set `E2_LLM_PROVIDER` to `gemini` or `openai` when both
 provider keys are configured. The replay fits separate predictors and calibration
 maps on the same chronological E1 partitions and compares them under matched
 policies and seeds. The exploratory default selects the first 50 issues from each
@@ -129,7 +130,9 @@ only after replay and settlement.
 
 The no-tools form uses only issue text, module identity and an earlier-issue module
 base rate. The snippets form supplies bounded pre-fix source snippets and rejects
-cross-module or mismatched citations.
+cross-module or mismatched citations. Citation checking verifies that cited source
+exists in the permitted snapshot; it does not verify that a natural-language claim
+is supported by that source.
 See [E2D_DESIGN.md](./E2D_DESIGN.md) for the model mapping, evaluation protocol,
 and explicit scope limitations.
 
@@ -143,15 +146,25 @@ $env:E2_LLM_MODEL = "qwen3:4b"
 $env:OLLAMA_BASE_URL = "http://localhost:11434/v1"
 ```
 
-`--max-issues` limits each selected split independently. For example, the following
-requests up to 50 validation and 50 test issues (9 module calls per issue):
+`--max-issues` limits each selected split independently. To compare the issue-only
+control with the source-grounded variant on the same first 50 validation and test
+issues, use separate output directories and replay each run:
 
 ```powershell
-python -m src.e2.direct results/inputs results/e2d-local --mode no_tools --max-issues 50
+python -m src.e2.direct results/inputs results/e2d-local-no-tools --mode no_tools --max-issues 50
+python -m src.e2.direct results/inputs results/e2d-local-no-tools --replay
 
-# Replay cached probabilities through the existing reporting game
-python -m src.e2.direct results/inputs results/e2d-local --replay
+python -m src.e2.direct results/inputs results/e2d-local-snippets --repository results/django.git --mode snippets --max-issues 50
+python -m src.e2.direct results/inputs results/e2d-local-snippets --replay
+
+# Compare the two modes on their shared, complete issue matrices
+python -m src.e2.direct results/inputs results/e2d-local-snippets --compare-mode results/e2d-local-no-tools
 ```
+
+Each mode requests up to 900 module calls for this cohort, though prior matching
+cache entries are reused. The comparison command writes paired probability and
+assignment differences to `e2d-mode-comparison.csv`. For an initial workflow check,
+replace both `--max-issues 50` values with `--max-issues 5`.
 
 ## Historical issue experiment
 

@@ -24,10 +24,13 @@ semantic evidence improves a learned predictor.
 | Outcome | E1's frozen production-module label, revealed only for evaluation and mechanism settlement |
 | Public graph and assignment mechanism | The graph, costs, reporting game, and conjunctive assignment from E1 |
 
-The primary `no_tools` prompt does not provide source code. The optional `snippets`
-mode supplies bounded pre-fix snippets from only the queried module and validates
-any citations against that snapshot. Neither mode provides the gold patch, later
-source, or another module's source.
+The `no_tools` prompt provides no source code; it is an issue-only control. The
+`snippets` mode supplies bounded pre-fix snippets from only the queried module.
+Citation validation checks exact source text, module scope, and (in snippets mode)
+the retrieved range. It does **not** determine whether the natural-language claim
+is entailed by or relevant to the cited text. Therefore the output establishes
+source-matched citations, not independently verified semantic evidence. Neither
+mode provides the gold patch, later source, or another module's source.
 
 ## Prediction and data protocol
 
@@ -48,7 +51,12 @@ source, or another module's source.
    replay; individual successful predictions remain available for calibration
    diagnostics.
 5. Replay the cached matrix without making more model calls. The default CLI
-   command selects up to 50 validation and 50 test issues, or 900 module calls.
+   command selects up to 50 validation and 50 test issues, or 900 module calls
+   per mode.
+6. To compare issue-only and source-grounded prompts, run both modes into separate
+   output directories with identical split limits, replay both, and use
+   `--compare-mode` to calculate paired differences on their shared complete issue
+   matrices.
 
 The current model's documented cutoff is unknown and must remain recorded as
 unknown unless an authoritative source establishes it. SWE-bench contamination
@@ -66,24 +74,31 @@ validation diagnostics as held-out results.
 
 ### Assignment and incentives
 
-The current replay fits E1's finite reporting policy on complete validation
-matrices, then evaluates it on complete test matrices. It includes the aligned
-control, additional `phi = 0` score/audit controls, acquisition types at
-`phi = 1/3` and `2/3`, score scales 0/2/8, audit rates 0/0.25, and the configured
-equal-split/Shapley credit cases. The misalignment, scoring, and audit sweeps reuse
-cached beliefs.
+The current replay fits E1's finite reporting policy separately to direct LLM
+forecasts and E1's lexical forecasts on the exact same complete validation
+issues. It evaluates both fitted policies on the exact same complete test issues,
+using matched private-type and audit random seeds. It includes honest routing,
+strategic B2 (credit, score, and audit off), the aligned controls, acquisition
+types at `phi = 1/3` and `2/3`, score scales 0/2/8, polling, scoring-only,
+audit-only (`lambda = 0, alpha = 0.25`), combined scoring and audits, and the
+configured equal-split/Shapley credit cases. The misalignment, scoring, and audit
+sweeps reuse cached beliefs.
 
 The replay reports per-issue welfare, coverage, padding, incentive score, audit
-spend, fines, and a miss-loss/excess-cost decomposition. Its aggregate summary
-includes efficiency relative to the E1 lexical B4 estimate. The decomposition and
-efficiency reference are **not** an oracle built from direct LLM evidence and
-must be identified as the E1 lexical reference when interpreting regret-like
-quantities.
+spend, fines, and a miss-loss/excess-cost decomposition. Paired summaries report
+direct-minus-lexical Brier loss, welfare, coverage, and padding on matched issues.
+For acquisition settings, gross recovery is welfare above strategic B2; net
+recovery subtracts centered scoring and audit expenditures, matching E1's budget
+accounting. The aggregate regret-like decomposition uses E1's lexical B4 estimate.
+Neither it nor efficiency is an oracle built from direct LLM evidence; identify it
+as the E1 lexical reference.
 
 ### Baselines and limitations
 
 - **B1:** E1 module-description router.
-- **B2-direct:** equation-2 selection from the direct probabilities.
+- **B2-direct:** honest equation-2 routing from direct probabilities. The separately
+  fitted credit-off, score-off, audit-off acquisition policy is labeled strategic
+  B2.
 - **B3:** plurality over module-level choices derived from the direct
   probabilities.
 - **B4-E1-lexical:** E1's pooled lexical estimate, retained as a comparator and
@@ -92,9 +107,9 @@ quantities.
 
 An estimated full-information oracle based on all modules' cached evidence would
 require an additional model stage and is not implemented. Calibration distortion
-maps such as `g_i`, calibration fitting, repeated generations for variance, and
-paired lexical-versus-semantic evidence comparisons are also outside the current
-E2-D implementation. Do not claim those analyses from its outputs.
+maps such as `g_i`, calibration fitting, and repeated generations for variance
+are outside the current E2-D implementation. Do not claim those analyses from its
+outputs.
 
 For local inference, API usage cost is zero; Ollama token counts are recorded when
 the local endpoint returns usage metadata. Inference time is recorded separately.

@@ -14,7 +14,7 @@ from sklearn.metrics import roc_auc_score
 from src.e1.dataset import MODULES
 from src.e1.game import Condition, fit_strategy
 from src.e1.replay import comparators, decisions, settle, tag
-from src.e2.models import paired_predictors
+from src.e2.models import paired_predictors, select_cohort
 from src.metrics import MetricsEvaluator
 
 
@@ -36,6 +36,59 @@ def paired_conditions() -> list[Condition]:
     conditions.append(Condition(ell=-1.0, phi=2 / 3, scale=2.0, audit=0.25, credit="equal"))
     conditions.append(Condition(ell=-1.0, phi=2 / 3, scale=2.0, audit=0.25, credit="shapley"))
     return conditions
+
+
+def cached_evidence_provenance(directory: Path, issue_ids: list[str]) -> dict:
+    """Summarize provider metadata from the evidence cache used by the replay."""
+    records = []
+    for issue_id in issue_ids:
+        for module_id in range(len(MODULES)):
+            path = directory / "e2_evidence" / issue_id / f"{module_id}.json"
+            record = json.loads(path.read_text(encoding="utf-8"))
+            records.append(record)
+
+    return {
+        "records": len(records),
+        "providers": sorted(
+            {
+                str(
+                    record.get("provider_type")
+                    or (
+                        record.get("provider")
+                        if record.get("model") is not None
+                        else "unspecified"
+                    )
+                )
+                for record in records
+            }
+        ),
+        "models": sorted(
+            {
+                str(
+                    record.get("model")
+                    or (
+                        record.get("provider")
+                        if record.get("provider") != "unspecified"
+                        else "unknown"
+                    )
+                )
+                for record in records
+            }
+        ),
+        "endpoints": sorted(
+            {str(record.get("endpoint") or "unspecified") for record in records}
+        ),
+        "model_cutoffs": sorted(
+            {
+                str(
+                    record.get("model_cutoff")
+                    or record.get("cutoff")
+                    or "unknown"
+                )
+                for record in records
+            }
+        ),
+    }
 
 
 def run(
@@ -275,6 +328,14 @@ def run(
         ]
         for split_name in ("train", "validation", "test")
     }
+    extraction_cohort = select_cohort(
+        json.loads((directory / "issues.json").read_text(encoding="utf-8")),
+        issues_per_split,
+    )
+    evidence_provenance = cached_evidence_provenance(
+        directory,
+        [issue["id"] for issue in extraction_cohort],
+    )
     cohort_sha256 = hashlib.sha256(
         json.dumps(issue_ids, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -287,8 +348,7 @@ def run(
                 ),
                 "pilot_issue_included_as_training_issue": "django__django-5158",
                 "issues_per_split": issues_per_split,
-                "evidence_model": "gemini-3.5-flash-lite",
-                "model_cutoff": "unknown",
+                "evidence_provenance": evidence_provenance,
                 "issue_ids": issue_ids,
                 "cohort_sha256": cohort_sha256,
             },

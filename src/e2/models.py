@@ -24,7 +24,7 @@ def select_cohort(issues: list[dict], per_split: int) -> list[dict]:
 
 
 def semantic_features(directory: Path, ids: list[str]) -> np.ndarray:
-    """Load validated semantic features in module-major shape."""
+    """Load source-matched LLM claim features; claim support is not verified."""
     cache = directory / "e2_evidence"
     features = np.zeros((len(ids), len(MODULES), 4), dtype=float)
     for issue_index, issue_id in enumerate(ids):
