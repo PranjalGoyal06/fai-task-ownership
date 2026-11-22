@@ -131,7 +131,7 @@ def configure_parameters() -> SimulationConfig:
 
     # Benchmark Preset Selector
     presets = {
-        "Mode 1: Standard Static Benchmark (Demo Default)": {
+        "1. Multi-Service Incident (Conjunctive Default)": {
             "num_rounds": 100,
             "num_agents": 10,
             "agent_regime": "mixed",
@@ -139,6 +139,7 @@ def configure_parameters() -> SimulationConfig:
             "audit_rate": 0.2,
             "audit_penalty": 10.0,
             "rule": ResolutionRule.CONJUNCTIVE,
+            "credit_rule": "SHAPLEY",
             "use_coalition_range": True,
             "coalition_min": 1,
             "coalition_max": 5,
@@ -147,7 +148,113 @@ def configure_parameters() -> SimulationConfig:
             "b1_staleness_rho": 0.3,
             "seed": 42,
         },
-        "Fully Aligned Baseline (100% Honest, ℓ = 0)": {
+        "2. Specialist & Reviewer Dispatch (Disjunctive — Shows Voting B3)": {
+            "num_rounds": 100,
+            "num_agents": 8,
+            "agent_regime": "mixed",
+            "score_scale": 2.5,
+            "audit_rate": 0.2,
+            "audit_penalty": 10.0,
+            "rule": ResolutionRule.DISJUNCTIVE,
+            "credit_rule": "SHAPLEY",
+            "use_coalition_range": False,
+            "coalition_size_k": 1,
+            "reward_per_owner": 5.0,
+            "dynamic_mode": False,
+            "b1_staleness_rho": 0.3,
+            "seed": 42,
+        },
+        "3. Deflection Crisis: On-Call Blame Avoidance (High Miss Loss)": {
+            "num_rounds": 100,
+            "num_agents": 10,
+            "agent_regime": "deflection",
+            "deflector_ell": 3.0,
+            "score_scale": 2.5,
+            "audit_rate": 0.2,
+            "audit_penalty": 10.0,
+            "rule": ResolutionRule.CONJUNCTIVE,
+            "credit_rule": "SHAPLEY",
+            "use_coalition_range": True,
+            "coalition_min": 1,
+            "coalition_max": 5,
+            "reward_per_owner": 5.0,
+            "dynamic_mode": False,
+            "b1_staleness_rho": 0.3,
+            "seed": 42,
+        },
+        "4. Acquisition Hoarding: Empire-Building & Land Grab (High Excess Cost)": {
+            "num_rounds": 100,
+            "num_agents": 10,
+            "agent_regime": "acquisition",
+            "acquirer_ell": -3.0,
+            "score_scale": 2.5,
+            "audit_rate": 0.2,
+            "audit_penalty": 10.0,
+            "rule": ResolutionRule.CONJUNCTIVE,
+            "credit_rule": "SHAPLEY",
+            "use_coalition_range": True,
+            "coalition_min": 1,
+            "coalition_max": 5,
+            "reward_per_owner": 5.0,
+            "dynamic_mode": False,
+            "b1_staleness_rho": 0.3,
+            "seed": 42,
+        },
+        "5. Cross-Module Coalitions: Shapley vs. Equal-Split (RQ3 Credit Sharing)": {
+            "num_rounds": 100,
+            "num_agents": 12,
+            "agent_regime": "mixed",
+            "score_scale": 2.5,
+            "audit_rate": 0.2,
+            "audit_penalty": 10.0,
+            "rule": ResolutionRule.CONJUNCTIVE,
+            "credit_rule": "SHAPLEY",
+            "use_coalition_range": True,
+            "coalition_min": 2,
+            "coalition_max": 5,
+            "reward_per_owner": 5.0,
+            "dynamic_mode": False,
+            "b1_staleness_rho": 0.3,
+            "seed": 42,
+        },
+        "6. Dynamic SRE Fatigue & Burnout (Mode 2 Online Learning)": {
+            "num_rounds": 150,
+            "num_agents": 8,
+            "agent_regime": "mixed",
+            "score_scale": 2.5,
+            "audit_rate": 0.2,
+            "audit_penalty": 10.0,
+            "rule": ResolutionRule.CONJUNCTIVE,
+            "credit_rule": "SHAPLEY",
+            "use_coalition_range": True,
+            "coalition_min": 1,
+            "coalition_max": 4,
+            "reward_per_owner": 5.0,
+            "dynamic_mode": True,
+            "beta_load": 0.8,
+            "load_decay": 0.5,
+            "alpha_credit_ema": 0.15,
+            "b1_staleness_rho": 0.3,
+            "seed": 42,
+        },
+        "7. Legacy Catalog Failure: High Description Staleness (ρ = 0.70)": {
+            "num_rounds": 100,
+            "num_agents": 10,
+            "agent_regime": "mixed",
+            "score_scale": 2.5,
+            "audit_rate": 0.2,
+            "audit_penalty": 10.0,
+            "rule": ResolutionRule.CONJUNCTIVE,
+            "credit_rule": "SHAPLEY",
+            "use_coalition_range": True,
+            "coalition_min": 1,
+            "coalition_max": 5,
+            "reward_per_owner": 5.0,
+            "dynamic_mode": False,
+            "b1_staleness_rho": 0.70,
+            "seed": 42,
+        },
+        "8. Fully Aligned Baseline: Truthful Reporting (ℓ = 0)": {
             "num_rounds": 100,
             "num_agents": 10,
             "agent_regime": "aligned",
@@ -155,6 +262,7 @@ def configure_parameters() -> SimulationConfig:
             "audit_rate": 0.2,
             "audit_penalty": 10.0,
             "rule": ResolutionRule.CONJUNCTIVE,
+            "credit_rule": "SHAPLEY",
             "use_coalition_range": True,
             "coalition_min": 1,
             "coalition_max": 5,
@@ -163,90 +271,7 @@ def configure_parameters() -> SimulationConfig:
             "b1_staleness_rho": 0.3,
             "seed": 42,
         },
-        "Mode 1: High Scoring Incentive (λ = 5.0)": {
-            "num_rounds": 100,
-            "num_agents": 10,
-            "agent_regime": "mixed",
-            "score_scale": 5.0,
-            "audit_rate": 0.2,
-            "audit_penalty": 10.0,
-            "rule": ResolutionRule.CONJUNCTIVE,
-            "use_coalition_range": True,
-            "coalition_min": 1,
-            "coalition_max": 5,
-            "reward_per_owner": 5.0,
-            "dynamic_mode": False,
-            "b1_staleness_rho": 0.3,
-            "seed": 42,
-        },
-        "Mode 2: Dynamic Learning & Workload Fatigue": {
-            "num_rounds": 100,
-            "num_agents": 10,
-            "agent_regime": "mixed",
-            "score_scale": 2.5,
-            "audit_rate": 0.2,
-            "audit_penalty": 10.0,
-            "rule": ResolutionRule.CONJUNCTIVE,
-            "use_coalition_range": True,
-            "coalition_min": 1,
-            "coalition_max": 5,
-            "reward_per_owner": 5.0,
-            "dynamic_mode": True,
-            "beta_load": 0.5,
-            "load_decay": 0.6,
-            "alpha_credit_ema": 0.1,
-            "b1_staleness_rho": 0.3,
-            "seed": 42,
-        },
-        "Deflection Crisis (All Agents Deflect ℓ = +2.0)": {
-            "num_rounds": 100,
-            "num_agents": 10,
-            "agent_regime": "deflection",
-            "score_scale": 2.5,
-            "audit_rate": 0.2,
-            "audit_penalty": 10.0,
-            "rule": ResolutionRule.CONJUNCTIVE,
-            "use_coalition_range": True,
-            "coalition_min": 1,
-            "coalition_max": 5,
-            "reward_per_owner": 5.0,
-            "dynamic_mode": False,
-            "b1_staleness_rho": 0.3,
-            "seed": 42,
-        },
-        "Acquisition Hoarding (All Agents Acquire ℓ = -2.0)": {
-            "num_rounds": 100,
-            "num_agents": 10,
-            "agent_regime": "acquisition",
-            "score_scale": 2.5,
-            "audit_rate": 0.2,
-            "audit_penalty": 10.0,
-            "rule": ResolutionRule.CONJUNCTIVE,
-            "use_coalition_range": True,
-            "coalition_min": 1,
-            "coalition_max": 5,
-            "reward_per_owner": 5.0,
-            "dynamic_mode": False,
-            "b1_staleness_rho": 0.3,
-            "seed": 42,
-        },
-        "Stale Description Stress Test (ρ = 0.7)": {
-            "num_rounds": 100,
-            "num_agents": 10,
-            "agent_regime": "mixed",
-            "score_scale": 2.5,
-            "audit_rate": 0.2,
-            "audit_penalty": 10.0,
-            "rule": ResolutionRule.CONJUNCTIVE,
-            "use_coalition_range": True,
-            "coalition_min": 1,
-            "coalition_max": 5,
-            "reward_per_owner": 5.0,
-            "dynamic_mode": False,
-            "b1_staleness_rho": 0.7,
-            "seed": 42,
-        },
-        "Custom Configuration": {},
+        "9. Custom Configuration": {},
     }
 
     selected_preset = st.sidebar.selectbox(
@@ -355,7 +380,7 @@ def configure_parameters() -> SimulationConfig:
         deflector_ell = st.number_input(
             "Deflector Toil Cost (ℓ_defl ≥ 0)",
             min_value=0.0,
-            value=2.0,
+            value=float(p_dict.get("deflector_ell", 2.0)),
             step=0.5,
             help="Private operational/toil cost felt by deflector agents when assigned.",
         )
@@ -367,7 +392,7 @@ def configure_parameters() -> SimulationConfig:
         acquirer_ell = st.number_input(
             "Acquirer Ownership Benefit (ℓ_acq ≤ 0)",
             max_value=0.0,
-            value=-2.0,
+            value=float(p_dict.get("acquirer_ell", -2.0)),
             step=0.5,
             help="Private benefit gained by acquirer agents from grabbing task ownership.",
         )
@@ -454,10 +479,11 @@ def configure_parameters() -> SimulationConfig:
             f"<div class='param-box'><b>{PARAMETER_METADATA['credit_rule']['symbol']}</b>: {PARAMETER_METADATA['credit_rule']['desc']}</div>",
             unsafe_allow_html=True,
         )
+        credit_default_idx = 1 if p_dict.get("credit_rule") in ("EQUAL_SPLIT", CreditRule.EQUAL_SPLIT) else 0
         credit_rule_str = st.selectbox(
             "Coalition Credit Sharing Rule (χ)",
             ["SHAPLEY", "EQUAL_SPLIT"],
-            index=0,
+            index=credit_default_idx,
             help="SHAPLEY: Allocates based on marginal contribution (zero to dummy players). EQUAL_SPLIT: Uniform split.",
         )
         credit_rule = (
@@ -495,17 +521,20 @@ def configure_parameters() -> SimulationConfig:
         if use_coalition_range:
             col_min, col_max = st.columns(2)
             with col_min:
-                coalition_min = st.number_input("Min Owners (k_min)", min_value=1, max_value=num_agents, value=1)
+                default_k_min = min(int(p_dict.get("coalition_min", 1)), num_agents)
+                coalition_min = st.number_input("Min Owners (k_min)", min_value=1, max_value=num_agents, value=default_k_min)
             with col_max:
+                default_k_max = min(max(int(p_dict.get("coalition_max", 5)), default_k_min), num_agents)
                 coalition_max = st.number_input(
                     "Max Owners (k_max)",
                     min_value=coalition_min,
                     max_value=num_agents,
-                    value=min(5, num_agents),
+                    value=default_k_max,
                 )
             coalition_size_k = coalition_min
         else:
-            coalition_size_k = st.slider("Fixed Coalition Size (k)", 1, num_agents, min(2, num_agents))
+            default_k_fixed = min(int(p_dict.get("coalition_size_k", 1)), num_agents)
+            coalition_size_k = st.slider("Fixed Coalition Size (k)", 1, num_agents, default_k_fixed)
             coalition_min = coalition_size_k
             coalition_max = coalition_size_k
 
@@ -693,7 +722,7 @@ def configure_parameters() -> SimulationConfig:
             "Workload Fatigue Penalty (β_load)",
             0.0,
             2.0,
-            0.5,
+            float(p_dict.get("beta_load", 0.5)),
             0.1,
             help="Increase in effective private assignment cost per unit of accumulated on-call load.",
         )
@@ -706,7 +735,7 @@ def configure_parameters() -> SimulationConfig:
             "Fatigue Recovery / Decay Rate (γ_load)",
             0.1,
             0.95,
-            0.6,
+            float(p_dict.get("load_decay", 0.6)),
             0.05,
             help="Geometric memory decay rate for accumulated on-call fatigue when resting.",
         )
@@ -719,7 +748,7 @@ def configure_parameters() -> SimulationConfig:
             "Credit Learning Smoothing (α_credit)",
             0.01,
             0.5,
-            0.1,
+            float(p_dict.get("alpha_credit_ema", 0.1)),
             0.05,
             help="Exponential moving average factor for learning expected coalition credit: ℓ_eff = ℓ - χ_bar.",
         )
