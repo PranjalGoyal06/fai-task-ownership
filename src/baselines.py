@@ -85,8 +85,13 @@ class PollingRouterB2:
     def __init__(self):
         self.mech = AssignmentMechanism(MechanismConfig(score_scale=0.0, audit_rate=0.0))
 
-    def select(self, task: Task, reports: dict[int, PublicReport]) -> set[int]:
-        return self.mech.select_agents(task, reports)
+    def select(
+        self,
+        task: Task,
+        reports: dict[int, PublicReport],
+        rng: np.random.Generator | None = None,
+    ) -> set[int]:
+        return self.mech.select_agents(task, reports, rng=rng)
 
 
 class VotingDeciderB3:

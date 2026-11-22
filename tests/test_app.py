@@ -1,15 +1,29 @@
 """Automated tests for simulation runner and app configuration."""
 
 import pytest
+import pandas as pd
+import time
+from app import (
+    build_fixed_factor_table,
+    mean_pivot,
+    research_grid_cache_key,
+    start_research_grid_worker,
+    summarize_rq1,
+    summarize_rq2,
+    summarize_rq3,
+)
 from src.experiment_cards import (
     COMPARISON_CARDS,
     EXPERIMENT_CARDS,
+    RESEARCH_QUESTION_CARDS,
     build_experiment_config,
     run_comparison_card,
+    run_research_question_card,
 )
 from src.simulation_runner import (
     SimulationConfig,
     SimulationCancelled,
+    _benchmark_worker_count,
     run_full_simulation,
     run_parameter_grid_search,
     run_parameter_sweep,
@@ -134,6 +148,99 @@ def test_parameter_sweep_rejects_invalid_replicate_count():
         run_parameter_sweep("score_scale", [1.0], base_cfg, num_replicates=0)
 
 
+def test_benchmark_worker_count_is_machine_scaled():
+    """Verify benchmark workers scale to available CPUs and never exceed eight."""
+    worker_count = _benchmark_worker_count()
+
+    assert 1 <= worker_count <= 8
+
+
+def test_research_heatmap_averages_duplicate_nuisance_factor_rows():
+    """A full factorial grid must reshape after averaging nuisance-factor duplicates."""
+    grid = pd.DataFrame(
+        [
+            {"ell": 1.0, "phi": 0.25, "metric": 2.0},
+            {"ell": 1.0, "phi": 0.25, "metric": 4.0},
+            {"ell": 2.0, "phi": 0.25, "metric": 6.0},
+            {"ell": 2.0, "phi": 0.50, "metric": 8.0},
+        ]
+    )
+
+    pivot = mean_pivot(grid, "ell", "phi", "metric")
+
+    assert pivot.loc[1.0, 0.25] == 3.0
+    assert pivot.loc[2.0, 0.25] == 6.0
+    assert pivot.loc[2.0, 0.50] == 8.0
+
+
+def test_research_conclusion_summaries_are_data_derived():
+    rq1 = pd.DataFrame(
+        [{"deflector_ratio": 0.0, "deflector_ell": 1.0, "B2 Regret": 1.0, "B2 Miss Loss": 2.0, "B2 Excess Cost": 3.0},
+         {"deflector_ratio": 0.5, "deflector_ell": 2.0, "B2 Regret": 4.0, "B2 Miss Loss": 5.0, "B2 Excess Cost": 6.0}]
+    )
+    rq2 = pd.DataFrame(
+        [{"score_scale": 1.0, "audit_rate": 0.2, "Regret Recovery Fraction": 0.4,
+          "Incentive Overhead": 0.3, "Tampering Rate": 0.1, "Mean Absolute Shading M": 0.2}]
+    )
+    rq3 = pd.DataFrame(
+        [{"rule": "conjunctive", "credit_rule": "shapley", "Mechanism Coalition Coverage": 0.8,
+          "Mechanism Coalition Padding": 0.2, "Required-Owner Underreporting": 0.1,
+          "Non-Required-Owner Overreporting": 0.1},
+         {"rule": "conjunctive", "credit_rule": "equal_split", "Mechanism Coalition Coverage": 0.7,
+          "Mechanism Coalition Padding": 0.3, "Required-Owner Underreporting": 0.2,
+          "Non-Required-Owner Overreporting": 0.2}]
+    )
+
+    assert len(summarize_rq1(rq1)) == 2
+    assert "λ=1.0" in summarize_rq2(rq2)[0]
+    assert len(summarize_rq3(rq3)) == 1
+
+
+def test_fixed_factor_table_is_arrow_serializable():
+    """Fixed-factor display values must remain uniformly typed for Streamlit/Arrow."""
+    base = SimulationConfig(num_rounds=2, num_agents=4, seed=42)
+
+    table = build_fixed_factor_table(base, "rq1_misalignment")
+
+    assert table["Factor"].map(type).eq(str).all()
+    assert table["Treatment"].map(type).eq(str).all()
+
+
+def test_research_grid_cache_key_is_exact_and_repeatable():
+    base = SimulationConfig(num_rounds=60, num_agents=12, seed=42)
+    grid = {"deflector_ratio": [0.0, 0.5], "deflector_ell": [1.0, 3.0]}
+
+    first = research_grid_cache_key("rq1_misalignment", base, 42, 5, grid)
+    second = research_grid_cache_key("rq1_misalignment", base, 42, 5, grid)
+    changed_seed = research_grid_cache_key("rq1_misalignment", base, 43, 5, grid)
+
+    assert first == second
+    assert first != changed_seed
+
+
+def test_research_grid_worker_returns_renderable_result():
+    base = SimulationConfig(num_rounds=2, num_agents=4, seed=42)
+    card = next(card for card in RESEARCH_QUESTION_CARDS if card.key == "rq1_misalignment")
+
+    status = start_research_grid_worker(
+        card,
+        base,
+        42,
+        1,
+        {"deflector_ratio": [0.0, 0.5], "deflector_ell": [0.0, 1.0]},
+        "smoke-rq1",
+    )
+    deadline = time.monotonic() + 10
+    while status["running"] and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    assert status["running"] is False
+    assert status["error"] is None
+    assert isinstance(status["result"], pd.DataFrame)
+    assert len(status["result"]) == 4
+    assert "B2 Regret" in status["result"]
+
+
 def test_parameter_grid_search_averages_metrics_across_combinations():
     """Verify a multi-parameter grid varies only selected fields and returns RQ metrics."""
     base_cfg = SimulationConfig(num_rounds=3, num_agents=4, seed=42, audit_rate=0.25)
@@ -196,4 +303,77 @@ def test_comparison_card_is_reproducible():
     second = run_comparison_card(card, base)
 
     assert first.equals(second)
+
+
+def test_disjunctive_runs_are_reproducible_with_equal_seed():
+    config = SimulationConfig(
+        num_rounds=2,
+        num_agents=12,
+        seed=42,
+        rule=ResolutionRule.DISJUNCTIVE,
+        credit_rule=CreditRule.SHAPLEY,
+        use_coalition_range=False,
+        coalition_size_k=1,
+    )
+
+    first = run_full_simulation(config)
+    second = run_full_simulation(config)
+
+    assert first.summary_df.equals(second.summary_df)
+
+
+def test_research_question_cards_are_reproducible_and_cover_all_metrics():
+    base = SimulationConfig(num_rounds=2, num_agents=4, seed=42)
+
+    for card in RESEARCH_QUESTION_CARDS:
+        smoke_grid = {
+            name: list(values[:2])
+            for name, values in card.parameter_grid.items()
+            if name != "num_rounds"
+        }
+        first = run_research_question_card(
+            card,
+            base,
+            num_rounds=2,
+            num_replicates=2,
+            parameter_grid=smoke_grid,
+        )
+        second = run_research_question_card(
+            card,
+            base,
+            num_rounds=2,
+            num_replicates=2,
+            parameter_grid=smoke_grid,
+        )
+        assert first.equals(second)
+        assert set(first["Runs"]) == {2}
+
+    rq1 = next(card for card in RESEARCH_QUESTION_CARDS if card.key == "rq1_misalignment")
+    rq1_results = run_research_question_card(
+        rq1,
+        base,
+        num_rounds=2,
+        num_replicates=2,
+        parameter_grid={
+            "deflector_ratio": [0.0, 0.5],
+            "deflector_ell": [0.0, 3.0],
+        },
+    )
+    assert "B2 Miss Loss" in rq1_results
+    assert "B2 Excess Cost" in rq1_results
+
+    rq3 = next(card for card in RESEARCH_QUESTION_CARDS if card.key == "rq3_coalition_credit")
+    rq3_results = run_research_question_card(
+        rq3,
+        base,
+        num_rounds=2,
+        num_replicates=2,
+        parameter_grid={
+            "credit_rule": [CreditRule.SHAPLEY, CreditRule.EQUAL_SPLIT],
+            "rule": [ResolutionRule.CONJUNCTIVE, ResolutionRule.DISJUNCTIVE],
+            "coalition_size_k": [1, 2],
+        },
+    )
+    assert "Required-Owner Underreporting" in rq3_results
+    assert "Non-Required-Owner Overreporting" in rq3_results
 

@@ -10,9 +10,10 @@ from src.simulation_runner import (
     SimulationResults,
     _research_metrics,
     run_full_simulation,
+    run_parameter_grid_search,
     run_parameter_sweep,
 )
-from src.types import ResolutionRule
+from src.types import CreditRule, ResolutionRule
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,22 @@ class ComparisonCard:
     values: tuple[Any, ...]
     explanation: str
     base_overrides: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResearchQuestionCard:
+    """A reproducible experiment card for one of the three proposal research questions."""
+
+    key: str
+    rq: str
+    title: str
+    question: str
+    explanation: str
+    parameter_grid: dict[str, tuple[Any, ...]]
+    primary_parameters: tuple[str, ...] = ()
+    nuisance_parameters: dict[str, tuple[Any, ...]] = field(default_factory=dict)
+    default_rounds: int = 60
+    default_replicates: int = 5
 
 
 EXPERIMENT_CARDS: tuple[ExperimentCard, ...] = (
@@ -193,6 +210,88 @@ COMPARISON_CARDS: tuple[ComparisonCard, ...] = (
 )
 
 
+RESEARCH_QUESTION_CARDS: tuple[ResearchQuestionCard, ...] = (
+    ResearchQuestionCard(
+        "rq1_misalignment",
+        "RQ1",
+        "Cost of Misalignment",
+        "How do regret, miss loss, and excess cost of unmediated polling scale with the "
+        "misaligned fraction ϕ and cost magnitude ℓ_i?",
+        "Runs a two-factor grid over deflector fraction and deflector cost. Each grid point "
+        "uses shared replicate seeds, with mean and standard deviation reported for B2 regret "
+        "decomposition and resolution outcomes.",
+        {
+            "deflector_ratio": (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
+            "deflector_ell": (0.0, 0.5, 1.0, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 8.0),
+            "num_agents": (6, 12, 24),
+            "num_rounds": (30, 60, 120),
+            "missing_evidence_prob": (0.0, 0.3, 0.6),
+        },
+        primary_parameters=("deflector_ratio", "deflector_ell"),
+        nuisance_parameters={
+            "num_agents": (6, 12, 24),
+            "num_rounds": (30, 60, 120),
+            "missing_evidence_prob": (0.0, 0.3, 0.6),
+        },
+        default_rounds=60,
+        default_replicates=5,
+    ),
+    ResearchQuestionCard(
+        "rq2_incentive_recovery",
+        "RQ2",
+        "Incentive Recovery",
+        "For a given budget B, how much regret is recovered by scoring scale λ and audit "
+        "rate α, and what balance is optimal?",
+        "Runs a λ × α grid and evaluates regret recovery fraction, mechanism regret, incentive "
+        "overhead, report shading, and tampering. The heatmap identifies the strongest recovery "
+        "subject to the configured audit and scoring budget.",
+        {
+            "score_scale": (0.0, 0.5, 1.0, 1.5, 2.5, 3.5, 5.0, 6.5, 8.0, 10.0),
+            "audit_rate": (0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.65, 0.8, 1.0),
+            "num_agents": (6, 12, 24),
+            "num_rounds": (30, 60, 120),
+            "audit_penalty": (2.5, 10.0, 25.0),
+            "audit_detection_delta": (0.2, 0.4, 0.8),
+        },
+        primary_parameters=("score_scale", "audit_rate"),
+        nuisance_parameters={
+            "num_agents": (6, 12, 24),
+            "num_rounds": (30, 60, 120),
+            "audit_penalty": (2.5, 10.0, 25.0),
+            "audit_detection_delta": (0.2, 0.4, 0.8),
+        },
+        default_rounds=60,
+        default_replicates=5,
+    ),
+    ResearchQuestionCard(
+        "rq3_coalition_credit",
+        "RQ3",
+        "Coalition Credit Sharing",
+        "How do Shapley and Equal-Split credit division rules affect free-riding, team padding, "
+        "and equilibrium reports across conjunctive versus disjunctive tasks?",
+        "Crosses credit rule, resolution rule, and coalition size. Reports coalition coverage, "
+        "padding, mean report shading, required-owner under-reporting, non-required-owner "
+        "over-reporting, and ECE with between-run uncertainty.",
+        {
+            "credit_rule": (CreditRule.SHAPLEY, CreditRule.EQUAL_SPLIT),
+            "rule": (ResolutionRule.CONJUNCTIVE, ResolutionRule.DISJUNCTIVE),
+            "coalition_size_k": (1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+            "num_agents": (12, 18, 24),
+            "num_rounds": (30, 60, 120),
+            "missing_evidence_prob": (0.0, 0.3, 0.6),
+        },
+        primary_parameters=("coalition_size_k",),
+        nuisance_parameters={
+            "num_agents": (12, 18, 24),
+            "num_rounds": (30, 60, 120),
+            "missing_evidence_prob": (0.0, 0.3, 0.6),
+        },
+        default_rounds=50,
+        default_replicates=5,
+    ),
+)
+
+
 def build_experiment_config(
     base_config: SimulationConfig,
     overrides: dict[str, Any],
@@ -227,6 +326,47 @@ def run_comparison_card(
         list(card.values),
         sweep_config,
         num_replicates=num_replicates,
+    )
+
+
+def run_research_question_card(
+    card: ResearchQuestionCard,
+    base_config: SimulationConfig,
+    num_rounds: int | None = None,
+    num_replicates: int | None = None,
+    num_agents: int | None = None,
+    seed: int | None = None,
+    parameter_grid: dict[str, list[Any]] | None = None,
+    progress_callback=None,
+    cancel_check=None,
+):
+    """Run a research-question grid with fixed seed offsets and averaged replicates."""
+    overrides: dict[str, Any] = {
+        "num_rounds": num_rounds if num_rounds is not None else card.default_rounds,
+    }
+    if num_agents is not None:
+        overrides["num_agents"] = num_agents
+    if seed is not None:
+        overrides["seed"] = seed
+    if card.key == "rq1_misalignment":
+        overrides["agent_regime"] = "custom"
+        overrides["acquirer_ratio"] = 0.0
+        overrides["neutral_ratio"] = 0.0
+    if "coalition_size_k" in card.parameter_grid:
+        overrides["use_coalition_range"] = False
+        overrides["coalition_size_k"] = 1
+    config = replace(base_config, **overrides)
+    grid = (
+        {name: list(values) for name, values in parameter_grid.items()}
+        if parameter_grid is not None
+        else {name: list(values) for name, values in card.parameter_grid.items()}
+    )
+    return run_parameter_grid_search(
+        grid,
+        config,
+        progress_callback=progress_callback,
+        num_replicates=num_replicates if num_replicates is not None else card.default_replicates,
+        cancel_check=cancel_check,
     )
 
 

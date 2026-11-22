@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from itertools import product
 from typing import Any, Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 import numpy as np
 import pandas as pd
+import os
 
 from src.agents import StrategicAgent
 from src.baselines import DescriptionRouterB1, PollingRouterB2, VotingDeciderB3
@@ -16,6 +18,12 @@ from src.evidence import EvidenceEngine
 from src.mechanisms import AssignmentMechanism
 from src.metrics import MetricsEvaluator
 from src.types import CreditRule, MechanismConfig, ResolutionRule, Task
+
+
+def _benchmark_worker_count() -> int:
+    """Use up to eight benchmark threads, scaled to the machine's available CPUs."""
+    available_cpus = os.cpu_count() or 1
+    return max(1, min(8, available_cpus))
 
 
 class SimulationCancelled(RuntimeError):
@@ -740,7 +748,7 @@ def run_full_simulation(
         # 4. Agent Selections across systems
         A_M = mech_active.select_agents(task, reports_M, rng=rng)
         A_B1 = b1_router.select(task)
-        A_B2 = b2_polling.select(task, reports_B2)
+        A_B2 = b2_polling.select(task, reports_B2, rng=rng)
         A_B3 = b3_voting.select(task, reports_B2)
         for i in A_M:
             agent_assigned_M[i] += 1
@@ -969,53 +977,61 @@ def run_parameter_sweep(
     sweep_rows = []
     total = len(param_values) * num_replicates
     completed = 0
+    replicate_rows: dict[tuple[int, int], dict[str, Any]] = {}
 
-    for idx, val in enumerate(param_values):
-        replicate_rows: list[dict[str, Any]] = []
-        for replicate in range(num_replicates):
-            cfg_copy = SimulationConfig(**base_config.__dict__)
-            setattr(cfg_copy, param_name, val)
-            cfg_copy.seed = base_config.seed + replicate
+    def run_sweep_replicate(param_index: int, val: Any, replicate: int) -> tuple[int, int, dict[str, Any]]:
+        cfg_copy = SimulationConfig(**base_config.__dict__)
+        setattr(cfg_copy, param_name, val)
+        cfg_copy.seed = base_config.seed + replicate
+        res = run_full_simulation(cfg_copy)
+        summary_by_system = res.summary_df.set_index("System")
+        research = _research_metrics(res)
+        return param_index, replicate, {
+            "Mechanism Welfare": summary_by_system.at["Mechanism M", "Welfare (Gross)"],
+            "Mechanism Regret": summary_by_system.at["Mechanism M", "Regret"],
+            "Mechanism Net Welfare": summary_by_system.at["Mechanism M", "Net Welfare"],
+            "Mechanism Incentive Overhead": summary_by_system.at["Mechanism M", "Incentive Overhead"],
+            "Mechanism Miss Loss": summary_by_system.at["Mechanism M", "Miss Loss (ΔV)"],
+            "Mechanism Excess Cost": summary_by_system.at["Mechanism M", "Excess Cost (ΔC)"],
+            "Mechanism Resolution Rate": summary_by_system.at["Mechanism M", "Resolution Rate"],
+            "Oracle Welfare": summary_by_system.at["Oracle (B4)", "Welfare (Gross)"],
+            "B2 Polling Regret": summary_by_system.at["Polling Router (B2)", "Regret"],
+            "B1 Description Regret": summary_by_system.at["Description (B1)", "Regret"],
+            "Mechanism Mean Absolute Shading": research["Mean Absolute Shading M"],
+            "Mechanism Tampering Rate": research["Tampering Rate"],
+            "Mechanism Coalition Coverage": research["Mechanism Coalition Coverage"],
+            "Mechanism Coalition Padding": research["Mechanism Coalition Padding"],
+            "Mechanism ECE": research["Mechanism ECE"],
+        }
 
-            res = run_full_simulation(cfg_copy)
-            summary_by_system = res.summary_df.set_index("System")
-            research = _research_metrics(res)
-            replicate_rows.append(
-                {
-                    "Mechanism Welfare": summary_by_system.at["Mechanism M", "Welfare (Gross)"],
-                    "Mechanism Regret": summary_by_system.at["Mechanism M", "Regret"],
-                    "Mechanism Net Welfare": summary_by_system.at["Mechanism M", "Net Welfare"],
-                    "Mechanism Incentive Overhead": summary_by_system.at[
-                        "Mechanism M", "Incentive Overhead"
-                    ],
-                    "Mechanism Miss Loss": summary_by_system.at["Mechanism M", "Miss Loss (ΔV)"],
-                    "Mechanism Excess Cost": summary_by_system.at["Mechanism M", "Excess Cost (ΔC)"],
-                    "Mechanism Resolution Rate": summary_by_system.at[
-                        "Mechanism M", "Resolution Rate"
-                    ],
-                    "Oracle Welfare": summary_by_system.at["Oracle (B4)", "Welfare (Gross)"],
-                    "B2 Polling Regret": summary_by_system.at["Polling Router (B2)", "Regret"],
-                    "B1 Description Regret": summary_by_system.at["Description (B1)", "Regret"],
-                    "Mechanism Mean Absolute Shading": research["Mean Absolute Shading M"],
-                    "Mechanism Tampering Rate": research["Tampering Rate"],
-                    "Mechanism Coalition Coverage": research["Mechanism Coalition Coverage"],
-                    "Mechanism Coalition Padding": research["Mechanism Coalition Padding"],
-                    "Mechanism ECE": research["Mechanism ECE"],
-                }
-            )
+    with ThreadPoolExecutor(
+        max_workers=_benchmark_worker_count(),
+        thread_name_prefix="benchmark-sweep",
+    ) as executor:
+        futures = {
+            executor.submit(run_sweep_replicate, idx, val, replicate): (idx, replicate)
+            for idx, val in enumerate(param_values)
+            for replicate in range(num_replicates)
+        }
+        for future in as_completed(futures):
+            param_index, replicate, row = future.result()
+            replicate_rows[(param_index, replicate)] = row
             completed += 1
             if progress_callback:
                 progress_callback(
                     completed / total,
-                    f"Sweeping {param_name} = {val}; replicate {replicate + 1}/{num_replicates} "
-                    f"({completed}/{total})...",
+                    f"Completed benchmark sweep run {completed}/{total}",
                 )
 
+    for idx, val in enumerate(param_values):
+        rows = [replicate_rows[(idx, replicate)] for replicate in range(num_replicates)]
         sweep_row: dict[str, Any] = {param_name: val, "Runs": num_replicates}
-        for metric_name in replicate_rows[0]:
-            metric_values = [row[metric_name] for row in replicate_rows]
+        for metric_name in rows[0]:
+            metric_values = [row[metric_name] for row in rows]
             sweep_row[metric_name] = float(np.mean(metric_values))
-            sweep_row[f"{metric_name} Std"] = float(np.std(metric_values, ddof=1)) if num_replicates > 1 else 0.0
+            sweep_row[f"{metric_name} Std"] = (
+                float(np.std(metric_values, ddof=1)) if num_replicates > 1 else 0.0
+            )
         sweep_rows.append(sweep_row)
 
     if progress_callback:
@@ -1063,6 +1079,17 @@ def _research_metrics(results: SimulationResults) -> dict[str, float]:
     b2_regret = float(b2["Regret"])
     mechanism_regret = float(mechanism["Regret"])
 
+    required_underreporting: list[float] = []
+    nonrequired_overreporting: list[float] = []
+    for task in results.task_history:
+        required = set(task["S_star"])
+        for agent_id, pi_true in task["pi_true"].items():
+            report = float(task["reports_M"][agent_id])
+            if agent_id in required:
+                required_underreporting.append(max(float(pi_true) - report, 0.0))
+            else:
+                nonrequired_overreporting.append(max(report - float(pi_true), 0.0))
+
     return {
         "B2 Welfare": float(b2["Welfare (Gross)"]),
         "B2 Regret": b2_regret,
@@ -1090,6 +1117,12 @@ def _research_metrics(results: SimulationResults) -> dict[str, float]:
         "B2 Coalition Padding": b2_padding,
         "Mechanism Coalition Coverage": mechanism_coverage,
         "Mechanism Coalition Padding": mechanism_padding,
+        "Required-Owner Underreporting": (
+            float(np.mean(required_underreporting)) if required_underreporting else 0.0
+        ),
+        "Non-Required-Owner Overreporting": (
+            float(np.mean(nonrequired_overreporting)) if nonrequired_overreporting else 0.0
+        ),
     }
 
 
@@ -1122,33 +1155,56 @@ def run_parameter_grid_search(
     grid_points = list(product(*(parameter_grid[name] for name in parameter_names)))
     total_runs = len(grid_points) * num_replicates
     completed = 0
-    rows: list[dict[str, Any]] = []
+    replicate_metrics: dict[tuple[int, int], dict[str, float]] = {}
 
-    for point in grid_points:
-        point_config = dict(zip(parameter_names, point))
-        replicate_metrics: list[dict[str, float]] = []
-        for replicate in range(num_replicates):
-            if cancel_check and cancel_check():
-                raise SimulationCancelled("Grid search cancelled by user.")
+    def run_grid_replicate(
+        point_index: int,
+        point_config: dict[str, Any],
+        replicate: int,
+    ) -> tuple[int, int, dict[str, float]]:
+        if cancel_check and cancel_check():
+            raise SimulationCancelled("Grid search cancelled by user.")
+        config_values = dict(base_config.__dict__)
+        config_values.update(point_config)
+        config_values["seed"] = int(config_values["seed"]) + replicate
+        config = SimulationConfig(**config_values)
+        results = run_full_simulation(config)
+        return point_index, replicate, _research_metrics(results)
 
-            config_values = dict(base_config.__dict__)
-            config_values.update(point_config)
-            config_values["seed"] = int(config_values["seed"]) + replicate
-            config = SimulationConfig(**config_values)
-            results = run_full_simulation(config)
-            replicate_metrics.append(_research_metrics(results))
-
+    with ThreadPoolExecutor(
+        max_workers=_benchmark_worker_count(),
+        thread_name_prefix="benchmark-grid",
+    ) as executor:
+        futures = {
+            executor.submit(
+                run_grid_replicate,
+                point_index,
+                dict(zip(parameter_names, point)),
+                replicate,
+            ): (point_index, replicate)
+            for point_index, point in enumerate(grid_points)
+            for replicate in range(num_replicates)
+        }
+        for future in as_completed(futures):
+            point_index, replicate, metrics = future.result()
+            replicate_metrics[(point_index, replicate)] = metrics
             completed += 1
             if progress_callback:
                 progress_callback(
                     completed / total_runs,
-                    f"Grid point {completed // num_replicates + (1 if completed % num_replicates else 0)}"
-                    f"/{len(grid_points)}; replicate {replicate + 1}/{num_replicates}...",
+                    f"Completed grid run {completed}/{total_runs}",
                 )
 
+    rows: list[dict[str, Any]] = []
+    for point_index, point in enumerate(grid_points):
+        point_config = dict(zip(parameter_names, point))
+        point_metrics = [
+            replicate_metrics[(point_index, replicate)]
+            for replicate in range(num_replicates)
+        ]
         row: dict[str, Any] = {**point_config, "Runs": num_replicates}
-        for metric_name in replicate_metrics[0]:
-            values = [metrics[metric_name] for metrics in replicate_metrics]
+        for metric_name in point_metrics[0]:
+            values = [metrics[metric_name] for metrics in point_metrics]
             row[metric_name] = float(np.mean(values))
             row[f"{metric_name} Std"] = (
                 float(np.std(values, ddof=1)) if num_replicates > 1 else 0.0

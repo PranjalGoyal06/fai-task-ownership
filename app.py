@@ -7,6 +7,7 @@ Authors: Pranjal Goyal, Ujas Shah, Harshal Kundanlal Rana, Satyakam Mishra
 from __future__ import annotations
 
 import math
+import threading
 from typing import Any
 import networkx as nx
 import numpy as np
@@ -29,9 +30,11 @@ from src.types import CreditRule, ResolutionRule
 from src.experiment_cards import (
     COMPARISON_CARDS,
     EXPERIMENT_CARDS,
+    RESEARCH_QUESTION_CARDS,
     get_interpretation_metrics,
     run_comparison_card,
     run_experiment_card,
+    run_research_question_card,
 )
 
 # -----------------------------------------------------------------------------
@@ -1726,6 +1729,570 @@ def render_experiment_cards_tab(base_config: SimulationConfig):
                     st.plotly_chart(chart, use_container_width=True)
 
 
+def mean_pivot(
+    frame: pd.DataFrame,
+    index: str,
+    columns: str,
+    values: str,
+) -> pd.DataFrame:
+    """Average nuisance-factor duplicates before reshaping a research heatmap."""
+    averaged = frame.groupby([index, columns], as_index=False)[values].mean()
+    return averaged.pivot(index=index, columns=columns, values=values)
+
+
+def research_grid_cache_key(
+    card_key: str,
+    base_config: SimulationConfig,
+    base_seed: int,
+    num_replicates: int,
+    parameter_grid: dict[str, list[Any]],
+) -> str:
+    """Build an exact, readable cache key for a completed RQ grid."""
+    grid_signature = {
+        name: [
+            value.value if hasattr(value, "value") else value
+            for value in values
+        ]
+        for name, values in sorted(parameter_grid.items())
+    }
+    return repr({
+        "card": card_key,
+        "base_seed": base_seed,
+        "replicates": num_replicates,
+        "rounds": base_config.num_rounds,
+        "agents": base_config.num_agents,
+        "grid": grid_signature,
+    })
+
+
+def start_research_grid_worker(
+    card,
+    base_config: SimulationConfig,
+    base_seed: int,
+    num_replicates: int,
+    grid_inputs: dict[str, list[Any]],
+    cache_key: str,
+) -> dict[str, Any]:
+    """Start one RQ grid in a daemon worker and return a plain shared status dict."""
+    status = {
+        "running": True,
+        "cancel_requested": False,
+        "progress": 0.0,
+        "message": "Starting grid search...",
+        "result": None,
+        "error": None,
+        "cache_key": cache_key,
+        "result_rendered": False,
+    }
+
+    def progress_callback(frac: float, message: str) -> None:
+        status["progress"] = float(frac)
+        status["message"] = message
+
+    def cancel_check() -> bool:
+        return bool(status["cancel_requested"])
+
+    def worker() -> None:
+        try:
+            result = run_research_question_card(
+                card,
+                base_config,
+                num_replicates=num_replicates,
+                seed=base_seed,
+                parameter_grid=grid_inputs,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+            )
+            status["result"] = result
+            status["progress"] = 1.0
+            status["message"] = "Grid search complete."
+        except SimulationCancelled:
+            status["message"] = "Grid search stopped by user."
+        except Exception as exc:
+            status["error"] = str(exc)
+            status["message"] = f"Grid search failed: {exc}"
+        finally:
+            status["running"] = False
+
+    thread = threading.Thread(
+        target=worker,
+        name=f"rq-grid-{card.key}",
+        daemon=True,
+    )
+    thread.start()
+    return status
+
+
+@st.fragment(run_every=0.5)
+def render_research_status_fragment(card, status: dict[str, Any]) -> None:
+    """Poll one RQ worker and provide an independent Stop button."""
+    st.progress(
+        float(status["progress"]),
+        text=f"{status['message']} ({int(status['progress'] * 100)}%)",
+    )
+    stop_slot, status_slot = st.columns([1, 4])
+    with stop_slot:
+        if status["running"] and st.button(
+            f"⏹ Stop {card.rq}",
+            key=f"stop_research_{card.key}",
+            use_container_width=True,
+            type="secondary",
+        ):
+            status["cancel_requested"] = True
+            status["message"] = f"{card.rq} stopping after active runs finish..."
+            st.rerun()
+    with status_slot:
+        if status["error"]:
+            st.error(status["error"])
+        elif status["running"]:
+            st.caption(status["message"])
+        else:
+            st.success(status["message"])
+
+    if status["running"] is False and status["result"] is not None:
+        cache_key = status["cache_key"]
+        st.session_state.research_question_grid_cache[cache_key] = status["result"]
+        st.session_state.research_question_results[card.key] = status["result"]
+        if not status["result_rendered"]:
+            status["result_rendered"] = True
+            st.rerun(scope="app")
+
+
+def summarize_rq1(frame: pd.DataFrame) -> list[str]:
+    phi = frame.groupby("deflector_ratio", as_index=False)[
+        ["B2 Regret", "B2 Miss Loss", "B2 Excess Cost"]
+    ].mean()
+    ell = frame.groupby("deflector_ell", as_index=False)[
+        ["B2 Regret", "B2 Miss Loss", "B2 Excess Cost"]
+    ].mean()
+    low_phi, high_phi = phi.iloc[0], phi.iloc[-1]
+    low_ell, high_ell = ell.iloc[0], ell.iloc[-1]
+    return [
+        f"Across nuisance-factor levels, mean B2 regret changes from "
+        f"{low_phi['B2 Regret']:.3f} to {high_phi['B2 Regret']:.3f} "
+        f"as ϕ moves from {low_phi['deflector_ratio']} to {high_phi['deflector_ratio']}.",
+        f"At the lowest and highest tested cost magnitudes, mean miss loss is "
+        f"{low_ell['B2 Miss Loss']:.3f} and {high_ell['B2 Miss Loss']:.3f}; "
+        f"excess cost is {low_ell['B2 Excess Cost']:.3f} and "
+        f"{high_ell['B2 Excess Cost']:.3f}.",
+    ]
+
+
+def summarize_rq2(frame: pd.DataFrame) -> list[str]:
+    primary = frame.groupby(["score_scale", "audit_rate"], as_index=False)[
+        ["Regret Recovery Fraction", "Incentive Overhead", "Tampering Rate", "Mean Absolute Shading M"]
+    ].mean()
+    best = primary.loc[primary["Regret Recovery Fraction"].idxmax()]
+    return [
+        f"The highest mean recovery in this completed grid is "
+        f"{best['Regret Recovery Fraction']:.3f} at λ={best['score_scale']} "
+        f"and α={best['audit_rate']}, with mean incentive overhead "
+        f"{best['Incentive Overhead']:.3f}.",
+        f"At that point, mean tampering is {best['Tampering Rate']:.3f} "
+        f"and mean absolute shading is {best['Mean Absolute Shading M']:.3f}.",
+    ]
+
+
+def summarize_rq3(frame: pd.DataFrame) -> list[str]:
+    grouped = frame.groupby(["rule", "credit_rule"], as_index=False)[
+        [
+            "Mechanism Coalition Coverage",
+            "Mechanism Coalition Padding",
+            "Required-Owner Underreporting",
+            "Non-Required-Owner Overreporting",
+        ]
+    ].mean()
+    conclusions: list[str] = []
+    for rule_name in grouped["rule"].dropna().unique():
+        subset = grouped[grouped["rule"] == rule_name]
+        if len(subset) < 2:
+            continue
+        shapley = subset[subset["credit_rule"] == "shapley"]
+        equal = subset[subset["credit_rule"] == "equal_split"]
+        if shapley.empty or equal.empty:
+            continue
+        s, e = shapley.iloc[0], equal.iloc[0]
+        conclusions.append(
+            f"{rule_name}: coverage differs from {s['Mechanism Coalition Coverage']:.3f} "
+            f"(Shapley) to {e['Mechanism Coalition Coverage']:.3f} (Equal Split); "
+            f"padding differs from {s['Mechanism Coalition Padding']:.3f} to "
+            f"{e['Mechanism Coalition Padding']:.3f}."
+        )
+    return conclusions
+
+
+def build_fixed_factor_table(base_config: SimulationConfig, card_key: str) -> pd.DataFrame:
+    """Build a string-only factor table that is safe for Streamlit Arrow serialization."""
+    fixed_factors = {
+        "Population regime": (
+            "Custom deflector-only population"
+            if card_key == "rq1_misalignment"
+            else str(base_config.agent_regime)
+        ),
+        "Credit rule": str(base_config.credit_rule.value),
+        "Resolution rule": str(base_config.rule.value),
+        "Calibration κ": str(base_config.calibration_kappa),
+        "Other mechanism/evidence parameters": (
+            "Fixed at the current sidebar values unless listed as a grid factor"
+        ),
+    }
+    return pd.DataFrame(
+        [{"Factor": str(key), "Treatment": str(value)} for key, value in fixed_factors.items()]
+    )
+
+
+def render_research_questions_tab(base_config: SimulationConfig):
+    """Tab 8: deterministic grid-search cards for RQ1-RQ3."""
+    st.subheader("🔬 Research Questions")
+    st.caption(
+        "Run the three proposal questions as reproducible grids. Shared replicate seeds "
+        "make parameter comparisons less noisy; means and standard deviations are retained."
+    )
+
+    if "research_question_results" not in st.session_state:
+        st.session_state.research_question_results = {}
+    if "research_question_grid_cache" not in st.session_state:
+        st.session_state.research_question_grid_cache = {}
+    if "research_question_heatmap_cache" not in st.session_state:
+        st.session_state.research_question_heatmap_cache = {}
+    if "research_question_statuses" not in st.session_state:
+        st.session_state.research_question_statuses = {}
+
+    for index, card in enumerate(RESEARCH_QUESTION_CARDS):
+        with st.container(border=True):
+            st.markdown(f"## {card.rq}: {card.title}")
+            st.write(card.question)
+            st.markdown("**Method**")
+            st.write(card.explanation)
+
+            with st.expander("Methodology and controlled factors", expanded=False):
+                st.markdown(
+                    """
+                    **Design.** This is a full-factorial grid: every listed level of each factor
+                    is crossed with every level of every other factor. Replicates receive
+                    deterministic, distinct seeds at every grid point.
+
+                    **Primary factors.** The parameters under study use 10 explicit levels.
+                    **Nuisance factors.** Population size, simulation horizon, and evidence or
+                    audit conditions use 3–4 levels to quantify sensitivity instead of hiding it.
+
+                    **Seed protocol.** Replicate *r* uses `base_seed + r`; the same seed set is
+                    reused across all grid points, reducing comparison noise.
+
+                    **Uncertainty.** `Mean` and `Std` are across independent seeded runs. `Std`
+                    is seed sensitivity, not within-round uncertainty.
+                    """
+                )
+                st.dataframe(
+                    build_fixed_factor_table(base_config, card.key),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+            replicate_key = f"rq_replicates_{card.key}"
+            seed_key = f"rq_seed_{card.key}"
+            control_columns = st.columns(2)
+            with control_columns[0]:
+                base_seed = st.number_input(
+                    "Base seed",
+                    min_value=0,
+                    max_value=100000,
+                    value=base_config.seed,
+                    step=1,
+                    key=seed_key,
+                )
+            with control_columns[1]:
+                num_replicates = st.number_input(
+                    "Seeded replicates",
+                    min_value=1,
+                    max_value=50,
+                    value=card.default_replicates,
+                    step=1,
+                    key=replicate_key,
+                )
+            grid_inputs: dict[str, list[Any]] = {
+                name: list(values) for name, values in card.parameter_grid.items()
+            }
+            with st.expander("Grid levels", expanded=False):
+                st.caption(
+                    "Primary factors use 10 levels. Nuisance factors use 3 levels to expose "
+                    "population, horizon, and measurement sensitivity."
+                )
+                level_columns = st.columns(3)
+                numeric_parameters = [
+                    parameter_name
+                    for parameter_name in card.parameter_grid
+                    if parameter_name not in {"credit_rule", "rule"}
+                ]
+                for index, parameter_name in enumerate(numeric_parameters):
+                    default_values = card.parameter_grid[parameter_name]
+                    labels = {
+                        "deflector_ratio": "Deflector fraction ϕ",
+                        "deflector_ell": "Deflector cost ℓ",
+                        "score_scale": "Scoring scale λ",
+                        "audit_rate": "Audit rate α",
+                        "coalition_size_k": "Coalition size k",
+                        "num_agents": "Population size N",
+                        "num_rounds": "Simulation horizon T",
+                        "missing_evidence_prob": "Missing evidence γ",
+                        "audit_penalty": "Audit penalty F",
+                        "audit_detection_delta": "Audit detection δ",
+                    }
+                    factor_role = (
+                        "Primary"
+                        if parameter_name in card.primary_parameters
+                        else "Nuisance"
+                        if parameter_name in card.nuisance_parameters
+                        else "Fixed treatment"
+                    )
+                    with level_columns[index % 3]:
+                        level_text = st.text_input(
+                            f"[{factor_role}] {labels.get(parameter_name, parameter_name)}",
+                            value=", ".join(str(value) for value in default_values),
+                            key=f"rq_levels_{card.key}_{parameter_name}",
+                        )
+                    try:
+                        parsed = [
+                            int(value.strip()) if str(value).strip().isdigit()
+                            else float(value.strip())
+                            for value in level_text.split(",")
+                            if value.strip()
+                        ]
+                        if parsed:
+                            grid_inputs[parameter_name] = parsed
+                    except ValueError:
+                        st.error(f"Invalid levels for {parameter_name}; defaults will be used.")
+
+            grid_size = int(np.prod([len(values) for values in grid_inputs.values()]))
+            st.caption(
+                f"Fixed base seed: {int(base_seed)} · "
+                f"{grid_size} combinations × {int(num_replicates)} seeds"
+            )
+            estimated_runs = grid_size * int(num_replicates)
+            if estimated_runs > 50000:
+                st.warning(
+                    f"This design requires {estimated_runs:,} simulation runs. "
+                    "It is research-scale work; reduce levels or replicates for faster screening."
+                )
+
+            if st.button(
+                f"▶ Run {card.rq}",
+                key=f"run_research_{card.key}",
+                use_container_width=True,
+                type="primary",
+            ):
+                cache_key = research_grid_cache_key(
+                    card.key,
+                    base_config,
+                    int(base_seed),
+                    int(num_replicates),
+                    grid_inputs,
+                )
+                if cache_key in st.session_state.research_question_grid_cache:
+                    grid_results = st.session_state.research_question_grid_cache[cache_key]
+                    st.session_state.research_question_statuses[card.key] = {
+                        "running": False,
+                        "cancel_requested": False,
+                        "progress": 1.0,
+                        "message": f"{card.rq} loaded from cached grid.",
+                        "result": grid_results,
+                        "error": None,
+                        "cache_key": cache_key,
+                        "result_rendered": False,
+                    }
+                    st.session_state.research_question_results[card.key] = grid_results
+                else:
+                    status = start_research_grid_worker(
+                        card,
+                        base_config,
+                        int(base_seed),
+                        int(num_replicates),
+                        grid_inputs,
+                        cache_key,
+                    )
+                    st.session_state.research_question_statuses[card.key] = status
+
+            status = st.session_state.research_question_statuses.get(card.key)
+            if status:
+                render_research_status_fragment(card, status)
+            if card.key in st.session_state.research_question_results:
+                grid_results = st.session_state.research_question_results[card.key].copy()
+                st.divider()
+
+                if card.key == "rq1_misalignment":
+                    st.markdown("### Polling (B2) regret decomposition")
+                    st.dataframe(
+                        grid_results[
+                            ["deflector_ratio", "deflector_ell", "B2 Regret", "B2 Regret Std",
+                             "B2 Miss Loss", "B2 Miss Loss Std", "B2 Excess Cost",
+                             "B2 Excess Cost Std", "Runs"]
+                        ],
+                        hide_index=True,
+                        use_container_width=True,
+                        height=520,
+                    )
+                    pivot = mean_pivot(
+                        grid_results, "deflector_ell", "deflector_ratio", "B2 Regret"
+                    )
+                    with st.expander("Conclusion from this RQ1 grid", expanded=True):
+                        for line in summarize_rq1(grid_results):
+                            st.markdown(f"- {line}")
+                    fig = px.imshow(
+                        pivot,
+                        labels={"x": "Misaligned fraction ϕ", "y": "Cost magnitude ℓ", "color": "B2 regret"},
+                        aspect="auto",
+                        text_auto=".2f",
+                        color_continuous_scale="RdYlGn_r",
+                    )
+                    fig.update_layout(height=560)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                elif card.key == "rq2_incentive_recovery":
+                    st.markdown("### Recovery and mechanism cost")
+                    st.dataframe(
+                        grid_results[
+                            ["score_scale", "audit_rate", "Mechanism Regret",
+                             "Mechanism Regret Std", "Regret Recovery Fraction",
+                             "Regret Recovery Fraction Std", "Incentive Overhead",
+                             "Tampering Rate", "Tampering Rate Std",
+                             "Mean Absolute Shading M", "Mean Absolute Shading M Std", "Runs"]
+                        ],
+                        hide_index=True,
+                        use_container_width=True,
+                        height=520,
+                    )
+                    recovery_by_primary = grid_results.groupby(
+                        ["score_scale", "audit_rate"], as_index=False
+                    )[["Regret Recovery Fraction", "Incentive Overhead"]].mean()
+                    best_row = recovery_by_primary.loc[
+                        recovery_by_primary["Regret Recovery Fraction"].idxmax()
+                    ]
+                    st.success(
+                        f"Highest mean recovery: {best_row['Regret Recovery Fraction']:.3f} "
+                        f"at λ={best_row['score_scale']}, α={best_row['audit_rate']} "
+                        f"(incentive overhead={best_row['Incentive Overhead']:.3f})."
+                    )
+                    with st.expander("Conclusion from this RQ2 grid", expanded=True):
+                        for line in summarize_rq2(grid_results):
+                            st.markdown(f"- {line}")
+                    pivot = mean_pivot(
+                        grid_results, "audit_rate", "score_scale",
+                        "Regret Recovery Fraction",
+                    )
+                    fig = px.imshow(
+                        pivot,
+                        labels={"x": "Scoring scale λ", "y": "Audit rate α", "color": "Regret recovered"},
+                        aspect="auto",
+                        text_auto=".2f",
+                        color_continuous_scale="Viridis",
+                    )
+                    fig.update_layout(height=560)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    diagnostic_columns = st.columns(2)
+                    for column, title, metric in (
+                        (diagnostic_columns[0], "Audit effect on tampering", "Tampering Rate"),
+                        (diagnostic_columns[1], "Audit effect on report shading", "Mean Absolute Shading M"),
+                    ):
+                        with column:
+                            diagnostic_pivot = mean_pivot(
+                                grid_results, "audit_rate", "score_scale", metric
+                            )
+                            diagnostic_fig = px.imshow(
+                                diagnostic_pivot,
+                                labels={"x": "Scoring scale λ", "y": "Audit rate α", "color": title},
+                                aspect="auto",
+                                text_auto=".3f",
+                                color_continuous_scale="RdYlGn_r",
+                            )
+                            diagnostic_fig.update_layout(
+                                height=460, title=title,
+                                margin=dict(l=20, r=20, t=40, b=20),
+                            )
+                            st.plotly_chart(diagnostic_fig, use_container_width=True)
+
+                else:
+                    for enum_column in ("credit_rule", "rule"):
+                        if enum_column in grid_results:
+                            grid_results[enum_column] = grid_results[enum_column].map(
+                                lambda value: value.value if hasattr(value, "value") else str(value)
+                            )
+                    st.markdown("### Free-riding and team-padding outcomes")
+                    st.dataframe(
+                        grid_results[
+                            ["credit_rule", "rule", "coalition_size_k",
+                             "Required-Owner Underreporting",
+                             "Required-Owner Underreporting Std",
+                             "Non-Required-Owner Overreporting",
+                             "Non-Required-Owner Overreporting Std",
+                             "Mechanism Coalition Coverage",
+                             "Mechanism Coalition Padding", "Runs"]
+                        ],
+                        hide_index=True,
+                        use_container_width=True,
+                        height=520,
+                    )
+                    with st.expander("Conclusion from this RQ3 grid", expanded=True):
+                        rq3_lines = summarize_rq3(grid_results)
+                        if rq3_lines:
+                            for line in rq3_lines:
+                                st.markdown(f"- {line}")
+                        else:
+                            st.info("Both credit rules must be present to summarize the RQ3 comparison.")
+                    grouped = grid_results.groupby(
+                        ["rule", "credit_rule"], as_index=False
+                    ).agg(
+                        Coverage=("Mechanism Coalition Coverage", "mean"),
+                        Padding=("Mechanism Coalition Padding", "mean"),
+                        Required_underreporting=("Required-Owner Underreporting", "mean"),
+                        Nonrequired_overreporting=("Non-Required-Owner Overreporting", "mean"),
+                    )
+                    rq3_charts = [
+                        (
+                            "Coverage",
+                            "Mechanism coalition coverage",
+                            "Coverage (fraction)",
+                        ),
+                        (
+                            "Padding",
+                            "Average assigned non-required agents",
+                            "Padding (agents)",
+                        ),
+                        (
+                            "Required_underreporting",
+                            "Required-owner under-reporting",
+                            "Under-reporting magnitude",
+                        ),
+                        (
+                            "Nonrequired_overreporting",
+                            "Non-required-owner over-reporting",
+                            "Over-reporting magnitude",
+                        ),
+                    ]
+                    chart_columns = st.columns(2)
+                    for chart_index, (metric, title, axis_title) in enumerate(rq3_charts):
+                        with chart_columns[chart_index % 2]:
+                            fig = px.bar(
+                                grouped,
+                                x="rule",
+                                y=metric,
+                                barmode="group",
+                                color="credit_rule",
+                                text_auto=".3f",
+                                title=f"{title} by credit rule",
+                                labels={
+                                    "rule": "Resolution rule",
+                                    metric: axis_title,
+                                    "credit_rule": "Credit rule",
+                                },
+                            )
+                            fig.update_layout(
+                                height=420,
+                                margin=dict(l=20, r=20, t=50, b=20),
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+
 # -----------------------------------------------------------------------------
 # Main Application Flow
 # -----------------------------------------------------------------------------
@@ -1772,6 +2339,7 @@ def main():
             "🎛️ Sensitivity Sweeps",
             "📖 FAI Theoretical Guide",
             "🧪 Experiment Cards",
+            "🔬 Research Questions",
         ],
         key="active_page",
         horizontal=True,
@@ -1792,6 +2360,8 @@ def main():
         render_theory_tab()
     elif page == "🧪 Experiment Cards":
         render_experiment_cards_tab(config)
+    elif page == "🔬 Research Questions":
+        render_research_questions_tab(config)
 
 
 if __name__ == "__main__":
