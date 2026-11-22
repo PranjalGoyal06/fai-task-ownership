@@ -103,6 +103,10 @@ The generic scan supports flat modules, packages and `src/` layouts. Repositorie
 
 The initial ownership map comes from directories and filenames in the earliest usable pre-fix tree. Review per-rule file counts before accepting. A rule that first matches later in the history is allowed. A rule that never owns an eligible file is flagged. The timeline, training results, directed import graph, inspector and ZIP export use the same E1 engine as the curated experiments. **Open a saved experiment** reopens trained results offline.
 
+After choosing dates, select **Trained classifier** or **Direct model probabilities**. The direct option asks the local Ollama model for one probability per issue and owner. Each request contains the issue, the owner's earlier rate, and short excerpts from that owner's pre-fix source. It never includes a later patch or source owned by another agent. **Try a small run** uses up to ten issues for fitting reporting strategies and ten issues for checking results. Completed responses are cached and a retry resumes an interrupted run. Game settings reuse saved probabilities.
+
+The direct option defaults to `qwen3.5:9b-q4_K_M` through a local Ollama server. It uses structured JSON, temperature zero, and disables reasoning output. The saved inputs record the model tag, installed-model digest when available, prompt version, source revision, and run settings. Direct model results are exploratory. A model may already have encountered public issues or source code before the experiment. [E2-D design](E2D_DESIGN.md) records the corresponding evidence boundaries and evaluation limits.
+
 | Storage setting | Default | Environment override in MiB |
 | --- | ---: | --- |
 | Production source in one snapshot | 100 MiB | `LAB_SNAPSHOT_MIB` |

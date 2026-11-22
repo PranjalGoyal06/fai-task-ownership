@@ -180,7 +180,7 @@ def test_gemini_retries_transient_server_errors():
     sleep.assert_called_once_with(1)
 
 
-def test_ollama_provider_uses_local_openai_compatible_endpoint(monkeypatch):
+def test_ollama_provider_uses_local_structured_chat_endpoint(monkeypatch):
     class Response:
         def __enter__(self):
             return self
@@ -191,12 +191,9 @@ def test_ollama_provider_uses_local_openai_compatible_endpoint(monkeypatch):
         def read(self):
             return json.dumps(
                 {
-                    "choices": [{"message": {"content": '{"probability": 0.5}'}}],
-                    "usage": {
-                        "prompt_tokens": 12,
-                        "completion_tokens": 8,
-                        "total_tokens": 20,
-                    },
+                    "message": {"content": '{"probability": 0.5}'},
+                    "prompt_eval_count": 12,
+                    "eval_count": 8,
                 }
             ).encode()
 
@@ -216,13 +213,12 @@ def test_ollama_provider_uses_local_openai_compatible_endpoint(monkeypatch):
 
     assert isinstance(provider, OllamaProvider)
     assert provider.model == "qwen3:4b"
-    assert captured["url"] == "http://localhost:11434/v1/chat/completions"
+    assert captured["url"] == "http://localhost:11434/api/chat"
     assert captured["authorization"] is None
     assert json.loads(response)["probability"] == 0.5
     assert provider.last_usage == {
         "prompt_tokens": 12,
         "completion_tokens": 8,
-        "total_tokens": 20,
     }
 
 

@@ -112,7 +112,7 @@ class GeminiProvider:
 
 
 class OllamaProvider:
-    """Local Ollama server using its OpenAI-compatible chat endpoint."""
+    """Local Ollama server using its native structured-output chat endpoint."""
 
     sampling = "temperature=0.0"
 
@@ -125,7 +125,7 @@ class OllamaProvider:
         self.base_url = (
             base_url
             or os.getenv("OLLAMA_BASE_URL")
-            or "http://localhost:11434/v1"
+            or "http://localhost:11434"
         ).rstrip("/")
         self.last_usage: dict[str, int] = {}
 
@@ -137,25 +137,32 @@ class OllamaProvider:
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.0,
-            "response_format": {"type": "json_object"},
+            "stream": False,
+            "format": "json",
+            "think": False,
+            "options": {"temperature": 0.0},
         }
         request = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
+            f"{self.base_url}/api/chat",
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=300) as response:
             result = json.loads(response.read().decode("utf-8"))
-        usage = result.get("usage")
-        if isinstance(usage, dict):
-            self.last_usage = {
-                key: int(usage[key])
-                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-                if isinstance(usage.get(key), int)
-            }
-        return result["choices"][0]["message"]["content"]
+        self.last_usage = {
+            "prompt_tokens": int(result["prompt_eval_count"]),
+            "completion_tokens": int(result["eval_count"]),
+        } if isinstance(result.get("prompt_eval_count"), int) and isinstance(result.get("eval_count"), int) else {}
+        return result["message"]["content"]
+
+    def metadata(self) -> dict:
+        """Return the installed model digest for reproducible local runs."""
+        request = urllib.request.Request(f"{self.base_url}/api/tags", method="GET")
+        with urllib.request.urlopen(request, timeout=30) as response:
+            models = json.loads(response.read().decode("utf-8")).get("models", [])
+        match = next((item for item in models if item.get("name") == self.model or item.get("model") == self.model), None)
+        return {"model_digest": match.get("digest") if match else "unknown"}
 
 
 def provider_from_environment() -> LLMProvider:

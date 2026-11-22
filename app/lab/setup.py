@@ -16,6 +16,8 @@ from src.lab.storage import LAB_CACHE, MIB, Store, StorageLimit, usage
 from src.lab.preset import load_prepared
 from src.lab.replay import Settings
 from src.lab.training import extract_one, train
+from src.lab.direct import django_setup, prepare as prepare_direct
+from src.lab.preset import ROOT
 from src.lab_ui.graph import graph
 
 
@@ -32,7 +34,8 @@ def open_replay(path):
 
 def saved_runs():
     paths = sorted([*(CACHE / "runs").glob("*/inputs.json.gz"),
-                    *LAB_CACHE.glob("*/*/runs/*/inputs.json.gz")], key=lambda p: p.stat().st_mtime, reverse=True)
+                    *LAB_CACHE.glob("*/*/runs/*/inputs.json.gz"),
+                    *LAB_CACHE.glob("*/*/direct/*/inputs.json.gz")], key=lambda p: p.stat().st_mtime, reverse=True)
     if paths:
         with st.expander("Open a saved experiment"):
             path = st.selectbox("Prepared run", paths, format_func=lambda p: f"{p.parents[2].name} · {p.parent.name[:12]}")
@@ -60,6 +63,13 @@ def repository():
         reset_setup()
         st.session_state["setup_scan"] = read(CACHE / "scan.json")
         stage("suitability")
+        st.rerun()
+    if (ROOT / "results" / "inputs" / "issues.json").exists() and st.button("Run Django direct probabilities"):
+        scan, groups, cutoffs = django_setup(ROOT)
+        reset_setup()
+        st.session_state.update(setup_scan=scan, setup_groups=groups, setup_cutoffs=cutoffs,
+                                setup_source="direct", setup_direct_size=10)
+        stage("direct")
         st.rerun()
     saved_runs()
     directories = sorted(p.parent for p in LAB_CACHE.glob("*/*/.active"))
@@ -252,7 +262,29 @@ def timeline(scan):
         st.warning("Each period needs at least one usable change. Adjust the cutoffs or ownership map.")
     elif st.button("Accept dates and continue", type="primary"):
         st.session_state["setup_cutoffs"] = cutoffs
-        stage("training")
+        stage("source")
+        st.rerun()
+
+
+def source(scan):
+    st.header("Choose how ownership probabilities are produced")
+    choice = st.radio("Probability source", ("Trained classifier", "Direct model probabilities"),
+                      help="Both choices use the same owners, dates, import graph, reporting game and issue inspection.")
+    if choice == "Trained classifier":
+        st.write("Learn ownership probabilities from earlier issue text and each agent's pre-fix source.")
+    else:
+        groups, cutoffs = st.session_state["setup_groups"], st.session_state["setup_cutoffs"]
+        retained, _ = partition(label_cases(scan, Ownership(groups, scan.get("roots")))[0], cutoffs)
+        counts = Counter(case["split"] for case in retained)
+        mode = st.radio("Run size", ("Try a small run", "Use all eligible issues"), horizontal=True)
+        selected = min(10, counts["validation"], counts["test"]) if mode == "Try a small run" else max(counts["validation"], counts["test"])
+        st.write("Ask the local model for a probability using the issue and short excerpts from one owner's pre-fix source.")
+        st.caption(f"This run will make up to {selected * 2 * len(groups)} local model calls. "
+                   "Completed calls are saved so a retry resumes where it stopped.")
+        st.session_state["setup_direct_size"] = selected
+    if st.button("Continue", type="primary"):
+        st.session_state["setup_source"] = "classifier" if choice == "Trained classifier" else "direct"
+        stage("training" if choice == "Trained classifier" else "direct")
         st.rerun()
 
 
@@ -277,15 +309,40 @@ def training(scan):
         st.rerun()
 
 
+def direct(scan):
+    st.header("Generate ownership probabilities")
+    groups, cutoffs = st.session_state["setup_groups"], st.session_state["setup_cutoffs"]
+    selected = st.session_state.get("setup_direct_size", 10)
+    st.write("The local model receives each issue and short excerpts from the selected owner's code before the fix. "
+             "It returns one ownership probability at a time.")
+    if st.button("Generate probabilities", type="primary"):
+        with st.status("Generating local model probabilities", expanded=True) as status:
+            message = st.empty()
+            try:
+                path = prepare_direct(scan, groups, cutoffs, selected_per_period=selected, cache=LAB_CACHE,
+                                      progress=message.write)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                status.update(label="Generation incomplete", state="error")
+                st.error(f"{error} Completed responses are available for a retry.")
+                return
+            status.update(label="Probabilities ready", state="complete")
+        st.session_state["setup_result"] = str(path)
+        stage("results")
+        st.rerun()
+
+
 def results():
     path = Path(st.session_state["setup_result"])
     preset = load_prepared(path)
-    st.header("Ownership model results")
+    st.header("Ownership probability results")
     counts = preset.manifest["split_counts"]
     st.write(f"Learned from {counts['train']} changes, calibrated on {counts['validation']}, "
              f"and evaluated on {counts['test']} later changes.")
-    st.write("Brier loss is the average squared error of the ownership probability. "
-             "Calibration error compares predicted and observed frequencies in ten probability bins. Lower is better for both.")
+    if preset.manifest.get("probability_source") == "direct_model":
+        st.write("These are probabilities returned directly by the local model. Brier loss is their average squared error. Lower is better.")
+    else:
+        st.write("Brier loss is the average squared error of the ownership probability. "
+                 "Calibration error compares predicted and observed frequencies in ten probability bins. Lower is better for both.")
     st.dataframe(preset.manifest["model_metrics"], hide_index=True, width="stretch")
     st.caption(f"{len(preset.issues)} held-out changes · {sum(preset.outcomes.sum(axis=1) > 1)} require multiple agents · "
                f"run {path.parent.name[:12]}")
@@ -295,7 +352,8 @@ def results():
 
 def main():
     current = st.session_state.get("setup_stage", "repository")
-    steps = ["repository", "suitability", "ownership", "timeline", "training", "results"]
+    next_step = "direct" if st.session_state.get("setup_source") == "direct" or current == "direct" else "training"
+    steps = ["repository", "suitability", "ownership", "timeline", "source", next_step, "results"]
     if "setup_info" in st.session_state:
         steps.insert(1, "roots")
     st.caption(f"New repository experiment · {steps.index(current) + 1} of {len(steps)}")
@@ -309,7 +367,8 @@ def main():
         results()
     else:
         scan = st.session_state["setup_scan"]
-        {"suitability": suitability, "ownership": mapping, "timeline": timeline, "training": training}[current](scan)
+        {"suitability": suitability, "ownership": mapping, "timeline": timeline, "source": source,
+         "training": training, "direct": direct}[current](scan)
 
 
 try:

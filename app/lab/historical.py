@@ -81,6 +81,20 @@ def comparison_view(run, polling, ids):
 def evidence(snapshot, frame, modules, repository):
     module = st.selectbox("Inspect local evidence for module", modules)
     idx = modules.index(module)
+    if direct := snapshot.get("direct_evidence", {}).get(str(idx)):
+        st.write(f"The local model estimated **{frame.at[module, 'belief']:.1%}** ownership from this issue and "
+                 "the supplied pre-fix source excerpts.")
+        if direct["evidence"]:
+            st.write(" ".join(direct["evidence"]))
+        if direct["citations"]:
+            st.caption("Verified excerpts supplied to the model")
+            for citation in direct["citations"]:
+                url = f"https://github.com/{repository}/blob/{snapshot['base']}/{citation['path']}#L{citation['start_line']}"
+                st.markdown(f"[{citation['path']} lines {citation['start_line']}–{citation['end_line']}]({url})")
+                st.code(citation["snippet"], language="python")
+        else:
+            st.caption("The model returned no verified source citation for this owner.")
+        return
     overlap, symbols, paths, mentioned = snapshot["features"][idx]
     st.write(f"The local model estimated **{frame.at[module, 'belief']:.1%}** ownership. "
              "It used four measurements from this module at the pre-fix revision.")
