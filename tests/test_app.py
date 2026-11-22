@@ -5,6 +5,7 @@ import pandas as pd
 import time
 from app import (
     build_fixed_factor_table,
+    build_model_parameter_table,
     mean_pivot,
     research_grid_cache_key,
     start_research_grid_worker,
@@ -206,6 +207,42 @@ def test_fixed_factor_table_is_arrow_serializable():
     assert table["Treatment"].map(type).eq(str).all()
 
 
+def test_model_parameter_inventory_lists_every_simulation_config_field():
+    base = SimulationConfig(num_rounds=2, num_agents=4, seed=42)
+    inventory = build_model_parameter_table(base)
+
+    assert set(inventory["Parameter"]) == set(SimulationConfig.__dataclass_fields__)
+
+
+def test_rq_primary_grid_sizes_keep_nuisance_parameters_fixed():
+    rq1 = next(card for card in RESEARCH_QUESTION_CARDS if card.key == "rq1_misalignment")
+    rq2 = next(card for card in RESEARCH_QUESTION_CARDS if card.key == "rq2_incentive_recovery")
+    rq3 = next(card for card in RESEARCH_QUESTION_CARDS if card.key == "rq3_coalition_credit")
+
+    rq1_product = 10 * 10
+    rq2_product = len(rq2.parameter_grid["score_scale"]) * len(rq2.parameter_grid["audit_rate"])
+    rq3_product = (
+        len(rq3.parameter_grid["credit_rule"])
+        * len(rq3.parameter_grid["rule"])
+        * len(rq3.parameter_grid["coalition_size_k"])
+    )
+
+    for card in (rq2, rq3):
+        for name, values in card.parameter_grid.items():
+            if name not in (
+                "score_scale",
+                "audit_rate",
+                "credit_rule",
+                "rule",
+                "coalition_size_k",
+            ):
+                assert len(values) == 1
+
+    assert rq1_product == 100
+    assert rq2_product == 100
+    assert rq3_product == 40
+
+
 def test_research_grid_cache_key_is_exact_and_repeatable():
     base = SimulationConfig(num_rounds=60, num_agents=12, seed=42)
     grid = {"deflector_ratio": [0.0, 0.5], "deflector_ell": [1.0, 3.0]}
@@ -326,11 +363,25 @@ def test_research_question_cards_are_reproducible_and_cover_all_metrics():
     base = SimulationConfig(num_rounds=2, num_agents=4, seed=42)
 
     for card in RESEARCH_QUESTION_CARDS:
-        smoke_grid = {
-            name: list(values[:2])
-            for name, values in card.parameter_grid.items()
-            if name != "num_rounds"
-        }
+        if card.key == "rq1_misalignment":
+            smoke_grid = {
+                "deflector_ratio": [0.0, 0.5],
+                "deflector_ell": [0.0, 3.0],
+            }
+        elif card.key == "rq2_incentive_recovery":
+            smoke_grid = {
+                "score_scale": [0.0, 2.5],
+                "audit_rate": [0.0, 0.5],
+                "deflector_ratio": [0.1, 0.5],
+                "deflector_ell": [1.0, 3.0],
+                "acquirer_ratio": [0.1, 0.3],
+            }
+        else:
+            smoke_grid = {
+                "credit_rule": [CreditRule.SHAPLEY, CreditRule.EQUAL_SPLIT],
+                "rule": [ResolutionRule.CONJUNCTIVE, ResolutionRule.DISJUNCTIVE],
+                "coalition_size_k": [1, 2],
+            }
         first = run_research_question_card(
             card,
             base,

@@ -1942,6 +1942,26 @@ def build_fixed_factor_table(base_config: SimulationConfig, card_key: str) -> pd
     )
 
 
+def build_model_parameter_table(base_config: SimulationConfig) -> pd.DataFrame:
+    """List all configurable SimulationConfig parameters and their current values."""
+    rows = []
+    for name in SimulationConfig.__dataclass_fields__:
+        value = getattr(base_config, name)
+        if hasattr(value, "value"):
+            value_text = str(value.value)
+        else:
+            value_text = str(value)
+        metadata = PARAMETER_METADATA.get(name)
+        rows.append({
+            "Parameter": name,
+            "Symbol": metadata["symbol"] if metadata else "",
+            "Name": metadata["name"] if metadata else name,
+            "Category": metadata["category"] if metadata else "Simulation",
+            "Current value": value_text,
+        })
+    return pd.DataFrame(rows)
+
+
 def render_research_questions_tab(base_config: SimulationConfig):
     """Tab 8: deterministic grid-search cards for RQ1-RQ3."""
     st.subheader("🔬 Research Questions")
@@ -1989,6 +2009,14 @@ def render_research_questions_tab(base_config: SimulationConfig):
                     hide_index=True,
                     use_container_width=True,
                 )
+                if card.key != "rq1_misalignment":
+                    st.markdown("**All configurable model parameters**")
+                    st.dataframe(
+                        build_model_parameter_table(base_config),
+                        hide_index=True,
+                        use_container_width=True,
+                        height=520,
+                    )
 
             replicate_key = f"rq_replicates_{card.key}"
             seed_key = f"rq_seed_{card.key}"
@@ -2016,52 +2044,65 @@ def render_research_questions_tab(base_config: SimulationConfig):
             }
             with st.expander("Grid levels", expanded=False):
                 st.caption(
-                    "Primary factors use 10 levels. Nuisance factors use 3 levels to expose "
-                    "population, horizon, and measurement sensitivity."
+                    "RQ1 retains its existing focused levels. RQ2 and RQ3 expose every "
+                    "SimulationConfig parameter; edit any level list before running."
                 )
                 level_columns = st.columns(3)
-                numeric_parameters = [
-                    parameter_name
-                    for parameter_name in card.parameter_grid
-                    if parameter_name not in {"credit_rule", "rule"}
-                ]
-                for index, parameter_name in enumerate(numeric_parameters):
+                grid_parameters = list(card.parameter_grid)
+                for index, parameter_name in enumerate(grid_parameters):
                     default_values = card.parameter_grid[parameter_name]
-                    labels = {
-                        "deflector_ratio": "Deflector fraction ϕ",
-                        "deflector_ell": "Deflector cost ℓ",
-                        "score_scale": "Scoring scale λ",
-                        "audit_rate": "Audit rate α",
-                        "coalition_size_k": "Coalition size k",
-                        "num_agents": "Population size N",
-                        "num_rounds": "Simulation horizon T",
-                        "missing_evidence_prob": "Missing evidence γ",
-                        "audit_penalty": "Audit penalty F",
-                        "audit_detection_delta": "Audit detection δ",
-                    }
+                    metadata = PARAMETER_METADATA.get(parameter_name)
+                    label = (
+                        f"{metadata['symbol']} · {metadata['name']}"
+                        if metadata
+                        else parameter_name
+                    )
                     factor_role = (
                         "Primary"
                         if parameter_name in card.primary_parameters
                         else "Nuisance"
                         if parameter_name in card.nuisance_parameters
-                        else "Fixed treatment"
+                        else "Editable treatment"
                     )
                     with level_columns[index % 3]:
                         level_text = st.text_input(
-                            f"[{factor_role}] {labels.get(parameter_name, parameter_name)}",
-                            value=", ".join(str(value) for value in default_values),
+                            f"[{factor_role}] {label}",
+                            value=", ".join(
+                                value.value if hasattr(value, "value") else str(value)
+                                for value in default_values
+                            ),
                             key=f"rq_levels_{card.key}_{parameter_name}",
                         )
                     try:
-                        parsed = [
-                            int(value.strip()) if str(value).strip().isdigit()
-                            else float(value.strip())
-                            for value in level_text.split(",")
-                            if value.strip()
-                        ]
+                        raw_values = [value.strip() for value in level_text.split(",") if value.strip()]
+                        parsed = []
+                        for raw_value in raw_values:
+                            if parameter_name == "rule":
+                                parsed.append(
+                                    ResolutionRule.CONJUNCTIVE
+                                    if raw_value.lower() in {"conjunctive", "and"}
+                                    else ResolutionRule.DISJUNCTIVE
+                                )
+                            elif parameter_name == "credit_rule":
+                                parsed.append(
+                                    CreditRule.SHAPLEY
+                                    if raw_value.lower() in {"shapley", "shapeley"}
+                                    else CreditRule.EQUAL_SPLIT
+                                )
+                            elif raw_value.lower() in {"true", "false"}:
+                                parsed.append(raw_value.lower() == "true")
+                            elif parameter_name in {
+                                "agent_regime",
+                                "graph_type",
+                            }:
+                                parsed.append(raw_value)
+                            elif "." in raw_value or "e-" in raw_value.lower():
+                                parsed.append(float(raw_value))
+                            else:
+                                parsed.append(int(raw_value))
                         if parsed:
                             grid_inputs[parameter_name] = parsed
-                    except ValueError:
+                    except (ValueError, TypeError):
                         st.error(f"Invalid levels for {parameter_name}; defaults will be used.")
 
             if card.key == "rq1_misalignment":
