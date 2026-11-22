@@ -61,28 +61,53 @@ st.markdown(
     }
     .metric-card {
         background: linear-gradient(135deg, #F8FAFC 0%, #EDF2F7 100%);
-        border: 1px solid #E2E8F0;
+        border: 1px solid #CBD5E1;
         border-radius: 10px;
-        padding: 16px;
+        padding: 14px 10px;
         text-align: center;
         box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        height: 156px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.08);
+        border-color: #94A3B8;
     }
     .metric-title {
-        font-size: 0.85rem;
-        font-weight: 600;
-        color: #64748B;
+        font-size: 0.82rem;
+        font-weight: 700;
+        color: #475569;
         text-transform: uppercase;
         letter-spacing: 0.5px;
-        margin-bottom: 4px;
+        line-height: 1.15;
     }
     .metric-value {
-        font-size: 1.8rem;
+        font-size: 1.85rem;
         font-weight: 700;
         color: #0F172A;
+        line-height: 1.15;
+        margin: 2px 0;
     }
     .metric-delta {
-        font-size: 0.85rem;
+        font-size: 0.86rem;
         font-weight: 600;
+        line-height: 1.2;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .metric-sub {
+        font-size: 0.68rem;
+        font-weight: 500;
+        color: #64748B;
+        line-height: 1.2;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     .delta-pos { color: #10B981; }
     .delta-neg { color: #EF4444; }
@@ -892,10 +917,11 @@ def render_kpi_cards(results: SimulationResults):
     with cols[0]:
         st.markdown(
             f"""
-            <div class="metric-card">
-                <div class="metric-title">Oracle Welfare</div>
+            <div class="metric-card" title="Full-information theoretical benchmark where ground truth S* is known.">
+                <div class="metric-title">Oracle Welfare (W°)</div>
                 <div class="metric-value">{o_row['Welfare (Gross)']:.2f}</div>
-                <div class="metric-delta delta-pos">Optimal Upper Bound</div>
+                <div class="metric-delta delta-pos">Optimal Benchmark</div>
+                <div class="metric-sub">Max surplus under full info</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -903,63 +929,81 @@ def render_kpi_cards(results: SimulationResults):
     with cols[1]:
         diff_b2 = m_row["Welfare (Gross)"] - b2_row["Welfare (Gross)"]
         sign = "+" if diff_b2 > 0 else ""
-        delta_cls = "delta-pos" if diff_b2 > 0 else "delta-neg"
+        delta_cls = "delta-pos" if diff_b2 >= 0 else "delta-neg"
         st.markdown(
             f"""
-            <div class="metric-card">
-                <div class="metric-title">Mechanism M Welfare</div>
+            <div class="metric-card" title="Gross social surplus: R·V(A; S*) - Σ c_i delivered by Mechanism M.">
+                <div class="metric-title">Mechanism Welfare (W)</div>
                 <div class="metric-value">{m_row['Welfare (Gross)']:.2f}</div>
-                <div class="metric-delta {delta_cls}">{sign}{diff_b2:.2f} vs Polling B2</div>
+                <div class="metric-delta {delta_cls}">{sign}{diff_b2:.2f} vs Polling (B2)</div>
+                <div class="metric-sub">Gross surplus (R·V - Σc_i)</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     with cols[2]:
         reg_diff = b2_row["Regret"] - m_row["Regret"]
+        delta_cls = "delta-pos" if reg_diff >= 0 else "delta-neg"
+        sign = "+" if reg_diff >= 0 else ""
         st.markdown(
             f"""
-            <div class="metric-card">
-                <div class="metric-title">Mechanism M Regret</div>
+            <div class="metric-card" title="Welfare forfeited relative to the oracle: Reg(M) = W(M°) - W(M).">
+                <div class="metric-title">Mechanism Regret</div>
                 <div class="metric-value">{m_row['Regret']:.2f}</div>
-                <div class="metric-delta delta-pos">Saved {reg_diff:.2f} regret vs B2</div>
+                <div class="metric-delta {delta_cls}">{sign}{reg_diff:.2f} saved vs B2</div>
+                <div class="metric-sub">Welfare gap (W° - W)</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     with cols[3]:
         eff = m_row["Efficiency Ratio (η)"]
+        eff_pct = eff * 100
+        delta_cls = "delta-pos" if eff >= 0.5 else ("delta-pos" if eff > 0 else "delta-neg")
         st.markdown(
             f"""
-            <div class="metric-card">
+            <div class="metric-card" title="Price of Anarchy analogue: W(M) / W(M°), measuring fraction of optimal welfare recovered.">
                 <div class="metric-title">Efficiency Ratio (η)</div>
                 <div class="metric-value">{eff:.2f}</div>
-                <div class="metric-delta">{eff * 100:.1f}% of Oracle</div>
+                <div class="metric-delta {delta_cls}">{eff_pct:.1f}% of Oracle</div>
+                <div class="metric-sub">Ratio of means (W / W°)</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     with cols[4]:
+        miss = m_row['Miss Loss (ΔV)']
+        delta_cls = "delta-pos" if np.isclose(miss, 0.0) else "delta-neg"
         st.markdown(
             f"""
-            <div class="metric-card">
+            <div class="metric-card" title="Loss from failing to assign all required owners: R · (V° - V). Driven by deflectors.">
                 <div class="metric-title">Miss Loss (ΔV)</div>
-                <div class="metric-value">{m_row['Miss Loss (ΔV)']:.2f}</div>
-                <div class="metric-delta">Unresolved penalties</div>
+                <div class="metric-value">{miss:.2f}</div>
+                <div class="metric-delta {delta_cls}">{"Zero Miss Loss" if np.isclose(miss, 0.0) else "Unresolved penalty"}</div>
+                <div class="metric-sub">Forfeited reward (false neg)</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     with cols[5]:
+        inc_cost = m_row['Incentive Overhead']
+        net_welf = m_row['Net Welfare']
         st.markdown(
             f"""
-            <div class="metric-card">
+            <div class="metric-card" title="Total incentive budget: Centered Brier score payouts + audit inspection fees.">
                 <div class="metric-title">Incentive Overhead</div>
-                <div class="metric-value">{m_row['Incentive Overhead']:.2f}</div>
-                <div class="metric-delta">Net Welfare: {m_row['Net Welfare']:.2f}</div>
+                <div class="metric-value">{inc_cost:.2f}</div>
+                <div class="metric-delta delta-pos">Net Welfare: {net_welf:.2f}</div>
+                <div class="metric-sub">Scoring payouts + audits</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+    st.caption(
+        "ℹ️ **Why benchmark against Polling (B2)?** Polling Router (B2) is our exact mechanism with zero incentives (λ = 0, α = 0, χ = 0). "
+        "The comparison directly isolates the **net causal treatment effect** recovered by our scoring, audits, and credit rules."
+    )
 
 
 def render_benchmark_tab(results: SimulationResults):
