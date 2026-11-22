@@ -10,6 +10,13 @@ from src.lab.analysis import compare
 from src.lab_ui.graph import graph
 from src.lab.preset import load_prepared, load_preset
 from src.lab.replay import Settings, export, read_recipe, recipe, replay
+from src.e2.research_grid import (
+    sweep_rq1,
+    sweep_rq2,
+    sweep_rq3,
+    generate_methods_benchmark,
+    export_full_research_suite,
+)
 
 
 @st.cache_data(max_entries=16, show_spinner=False)
@@ -255,6 +262,39 @@ def experiment(preset):
                            file_name="recipe.json", mime="application/json")
         st.download_button("Download replay ZIP", data=export(preset, run, polling),
                            file_name=preset.manifest["repository"].split("/")[-1] + "-replay.zip", mime="application/zip")
+
+    with st.expander("📊 Paper Research Questions (Grid Replay & Tables)", expanded=True):
+        st.markdown(
+            "Run the full parameter sweeps across **RQ1** (misalignment scaling), **RQ2** (scoring & audit recovery), "
+            "and **RQ3** (coalition credit sharing) on these held-out issues to reproduce the results for the paper."
+        )
+        is_direct = preset.manifest.get("probability_source") == "direct_model"
+        reports_dir = Path("reports/e2" if is_direct else "reports/e1")
+        if st.button("🚀 Run Full Research Grid Sweep", type="secondary"):
+            with st.spinner("Executing grid sweeps across all game-theoretic conditions..."):
+                export_full_research_suite(preset, output_dir=reports_dir)
+                st.session_state["research_grid_done"] = True
+                st.success(f"Grid sweep complete! Artifacts exported to `{reports_dir}/`.")
+
+        out_dir = reports_dir
+        if (out_dir / "methods_benchmark.csv").exists():
+            t1, t2, t3, t4 = st.tabs(["Methods Benchmark (Table 4)", "RQ1: Misalignment", "RQ2: Scoring & Audit", "RQ3: Coalition Credit"])
+            with t1:
+                st.subheader(f"Benchmark Comparison (Table 4) · {'Direct LLM (E2)' if is_direct else 'Trained Classifier (E1)'}")
+                df_meth = pd.read_csv(out_dir / "methods_benchmark.csv")
+                st.dataframe(df_meth, hide_index=True, width="stretch")
+            with t2:
+                st.subheader("RQ1: Scaling with Misalignment (ell, phi)")
+                df_rq1 = pd.read_csv(out_dir / "rq1_misalignment.csv")
+                st.dataframe(df_rq1[["regime", "private_cost_ell", "strategic_fraction_phi", "welfare", "miss_loss", "excess_cost", "padding", "coverage"]], hide_index=True, width="stretch")
+            with t3:
+                st.subheader("RQ2: Scoring & Audit Recovery (lambda, alpha)")
+                df_rq2 = pd.read_csv(out_dir / "rq2_scoring_audit.csv")
+                st.dataframe(df_rq2[["regime", "scoring_lambda", "audit_rate_alpha", "welfare", "net_welfare", "padding", "score_overhead", "net_overhead", "audited_count", "contradicted_count"]], hide_index=True, width="stretch")
+            with t4:
+                st.subheader("RQ3: Coalition Credit (Equal Split vs. Shapley Value)")
+                df_rq3 = pd.read_csv(out_dir / "rq3_credit_coalitions.csv")
+                st.dataframe(df_rq3[["credit_rule", "reward_R", "scoring_lambda", "welfare", "coverage", "padding", "iterations", "converged"]], hide_index=True, width="stretch")
 
 
 def main():
