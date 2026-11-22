@@ -35,6 +35,7 @@ from src.experiment_cards import (
     run_comparison_card,
     run_experiment_card,
     run_research_question_card,
+    run_rq1_experiment,
 )
 
 # -----------------------------------------------------------------------------
@@ -2063,11 +2064,19 @@ def render_research_questions_tab(base_config: SimulationConfig):
                     except ValueError:
                         st.error(f"Invalid levels for {parameter_name}; defaults will be used.")
 
-            grid_size = int(np.prod([len(values) for values in grid_inputs.values()]))
-            st.caption(
-                f"Fixed base seed: {int(base_seed)} · "
-                f"{grid_size} combinations × {int(num_replicates)} seeds"
-            )
+            if card.key == "rq1_misalignment":
+                num_points = len(grid_inputs.get("deflector_ratio", [])) + len(grid_inputs.get("deflector_ell", []))
+                grid_size = num_points
+                st.caption(
+                    f"Fixed base seed: {int(base_seed)} · "
+                    f"2 parameter sweeps ({num_points} parameter points) × {int(num_replicates)} seeds = {num_points * int(num_replicates)} runs"
+                )
+            else:
+                grid_size = int(np.prod([len(values) for values in grid_inputs.values()]))
+                st.caption(
+                    f"Fixed base seed: {int(base_seed)} · "
+                    f"{grid_size} combinations × {int(num_replicates)} seeds"
+                )
             estimated_runs = grid_size * int(num_replicates)
             if estimated_runs > 50000:
                 st.warning(
@@ -2120,32 +2129,262 @@ def render_research_questions_tab(base_config: SimulationConfig):
                 st.divider()
 
                 if card.key == "rq1_misalignment":
-                    st.markdown("### Polling (B2) regret decomposition")
-                    st.dataframe(
-                        grid_results[
-                            ["deflector_ratio", "deflector_ell", "B2 Regret", "B2 Regret Std",
-                             "B2 Miss Loss", "B2 Miss Loss Std", "B2 Excess Cost",
-                             "B2 Excess Cost Std", "Runs"]
-                        ],
-                        hide_index=True,
-                        use_container_width=True,
+                    if "sweep" in grid_results.columns:
+                        df_phi = grid_results[grid_results["sweep"] == "phi"].sort_values("deflector_ratio")
+                        df_ell = grid_results[grid_results["sweep"] == "ell"].sort_values("deflector_ell")
+                    else:
+                        df_phi = grid_results.sort_values("deflector_ratio")
+                        df_ell = grid_results.sort_values("deflector_ell")
+
+                    st.markdown("### 📊 Regret Decomposition: Polling (B2) vs Mechanism $\\mathcal{M}$")
+                    st.caption(
+                        "Additive Identity: **Regret = Miss Loss ($\\Delta V$) + Excess Cost ($\\Delta C$)**. "
+                        "Points reflect mean across seeded replicates; tooltips display $\\pm$ 1 std seed sensitivity."
+                    )
+
+                    fig = make_subplots(
+                        rows=1,
+                        cols=2,
+                        subplot_titles=(
+                            "(a) Varying Misaligned Fraction ϕ (Fixed ℓ = 3.0)",
+                            "(b) Varying Deflector Cost Magnitude ℓ (Fixed ϕ = 0.5)",
+                        ),
+                        horizontal_spacing=0.08,
+                    )
+
+                    c_regret = "#1f77b4"  # Blue
+                    c_miss = "#d62728"    # Crimson Red
+                    c_cost = "#2ca02c"    # Forest Green
+
+                    # Panel 1: phi sweep
+                    if not df_phi.empty:
+                        # Mechanism M
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_phi["deflector_ratio"],
+                                y=df_phi["Mechanism Regret"],
+                                mode="lines+markers",
+                                line=dict(color=c_regret, width=2.5),
+                                marker=dict(symbol="circle", size=8),
+                                name="Regret (Mechanism M)",
+                                legendgroup="m_regret",
+                                customdata=df_phi["Mechanism Regret Std"] if "Mechanism Regret Std" in df_phi else [0] * len(df_phi),
+                                hovertemplate="ϕ: %{x:.2f}<br>M Regret: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=1,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_phi["deflector_ratio"],
+                                y=df_phi["Mechanism Miss Loss"],
+                                mode="lines+markers",
+                                line=dict(color=c_miss, width=2.5),
+                                marker=dict(symbol="circle", size=8),
+                                name="Miss Loss ΔV (Mechanism M)",
+                                legendgroup="m_miss",
+                                customdata=df_phi["Mechanism Miss Loss Std"] if "Mechanism Miss Loss Std" in df_phi else [0] * len(df_phi),
+                                hovertemplate="ϕ: %{x:.2f}<br>M Miss Loss: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=1,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_phi["deflector_ratio"],
+                                y=df_phi["Mechanism Excess Cost"],
+                                mode="lines+markers",
+                                line=dict(color=c_cost, width=2.5),
+                                marker=dict(symbol="circle", size=8),
+                                name="Excess Cost ΔC (Mechanism M)",
+                                legendgroup="m_cost",
+                                customdata=df_phi["Mechanism Excess Cost Std"] if "Mechanism Excess Cost Std" in df_phi else [0] * len(df_phi),
+                                hovertemplate="ϕ: %{x:.2f}<br>M Excess Cost: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=1,
+                        )
+
+                        # Polling B2
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_phi["deflector_ratio"],
+                                y=df_phi["B2 Regret"],
+                                mode="lines+markers",
+                                line=dict(color=c_regret, width=2.5, dash="dash"),
+                                marker=dict(symbol="square", size=8),
+                                name="Regret (Polling B2)",
+                                legendgroup="b2_regret",
+                                customdata=df_phi["B2 Regret Std"] if "B2 Regret Std" in df_phi else [0] * len(df_phi),
+                                hovertemplate="ϕ: %{x:.2f}<br>B2 Regret: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=1,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_phi["deflector_ratio"],
+                                y=df_phi["B2 Miss Loss"],
+                                mode="lines+markers",
+                                line=dict(color=c_miss, width=2.5, dash="dash"),
+                                marker=dict(symbol="square", size=8),
+                                name="Miss Loss ΔV (Polling B2)",
+                                legendgroup="b2_miss",
+                                customdata=df_phi["B2 Miss Loss Std"] if "B2 Miss Loss Std" in df_phi else [0] * len(df_phi),
+                                hovertemplate="ϕ: %{x:.2f}<br>B2 Miss Loss: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=1,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_phi["deflector_ratio"],
+                                y=df_phi["B2 Excess Cost"],
+                                mode="lines+markers",
+                                line=dict(color=c_cost, width=2.5, dash="dash"),
+                                marker=dict(symbol="square", size=8),
+                                name="Excess Cost ΔC (Polling B2)",
+                                legendgroup="b2_cost",
+                                customdata=df_phi["B2 Excess Cost Std"] if "B2 Excess Cost Std" in df_phi else [0] * len(df_phi),
+                                hovertemplate="ϕ: %{x:.2f}<br>B2 Excess Cost: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=1,
+                        )
+
+                    # Panel 2: ell sweep
+                    if not df_ell.empty:
+                        # Mechanism M
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_ell["deflector_ell"],
+                                y=df_ell["Mechanism Regret"],
+                                mode="lines+markers",
+                                line=dict(color=c_regret, width=2.5),
+                                marker=dict(symbol="circle", size=8),
+                                showlegend=False,
+                                customdata=df_ell["Mechanism Regret Std"] if "Mechanism Regret Std" in df_ell else [0] * len(df_ell),
+                                hovertemplate="ℓ: %{x:.1f}<br>M Regret: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=2,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_ell["deflector_ell"],
+                                y=df_ell["Mechanism Miss Loss"],
+                                mode="lines+markers",
+                                line=dict(color=c_miss, width=2.5),
+                                marker=dict(symbol="circle", size=8),
+                                showlegend=False,
+                                customdata=df_ell["Mechanism Miss Loss Std"] if "Mechanism Miss Loss Std" in df_ell else [0] * len(df_ell),
+                                hovertemplate="ℓ: %{x:.1f}<br>M Miss Loss: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=2,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_ell["deflector_ell"],
+                                y=df_ell["Mechanism Excess Cost"],
+                                mode="lines+markers",
+                                line=dict(color=c_cost, width=2.5),
+                                marker=dict(symbol="circle", size=8),
+                                showlegend=False,
+                                customdata=df_ell["Mechanism Excess Cost Std"] if "Mechanism Excess Cost Std" in df_ell else [0] * len(df_ell),
+                                hovertemplate="ℓ: %{x:.1f}<br>M Excess Cost: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=2,
+                        )
+
+                        # Polling B2
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_ell["deflector_ell"],
+                                y=df_ell["B2 Regret"],
+                                mode="lines+markers",
+                                line=dict(color=c_regret, width=2.5, dash="dash"),
+                                marker=dict(symbol="square", size=8),
+                                showlegend=False,
+                                customdata=df_ell["B2 Regret Std"] if "B2 Regret Std" in df_ell else [0] * len(df_ell),
+                                hovertemplate="ℓ: %{x:.1f}<br>B2 Regret: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=2,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_ell["deflector_ell"],
+                                y=df_ell["B2 Miss Loss"],
+                                mode="lines+markers",
+                                line=dict(color=c_miss, width=2.5, dash="dash"),
+                                marker=dict(symbol="square", size=8),
+                                showlegend=False,
+                                customdata=df_ell["B2 Miss Loss Std"] if "B2 Miss Loss Std" in df_ell else [0] * len(df_ell),
+                                hovertemplate="ℓ: %{x:.1f}<br>B2 Miss Loss: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=2,
+                        )
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df_ell["deflector_ell"],
+                                y=df_ell["B2 Excess Cost"],
+                                mode="lines+markers",
+                                line=dict(color=c_cost, width=2.5, dash="dash"),
+                                marker=dict(symbol="square", size=8),
+                                showlegend=False,
+                                customdata=df_ell["B2 Excess Cost Std"] if "B2 Excess Cost Std" in df_ell else [0] * len(df_ell),
+                                hovertemplate="ℓ: %{x:.1f}<br>B2 Excess Cost: %{y:.2f} ± %{customdata:.2f}<extra></extra>",
+                            ),
+                            row=1, col=2,
+                        )
+
+                    fig.add_hline(y=0, line_dash="dot", line_color="rgba(128,128,128,0.5)", row=1, col=1)
+                    fig.add_hline(y=0, line_dash="dot", line_color="rgba(128,128,128,0.5)", row=1, col=2)
+                    fig.update_xaxes(title_text="Misaligned Fraction ϕ", dtick=0.2, row=1, col=1)
+                    fig.update_xaxes(title_text="Deflector Cost Magnitude ℓ", dtick=1.0, row=1, col=2)
+                    fig.update_yaxes(title_text="Metric Value (Averaged Across Seeds)", row=1, col=1)
+                    fig.update_yaxes(title_text="", row=1, col=2)
+                    fig.update_layout(
                         height=520,
+                        margin=dict(l=50, r=30, t=60, b=50),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.08,
+                            xanchor="center",
+                            x=0.5,
+                            bgcolor="rgba(255,255,255,0.7)",
+                        ),
+                        hovermode="x unified",
                     )
-                    pivot = mean_pivot(
-                        grid_results, "deflector_ell", "deflector_ratio", "B2 Regret"
-                    )
-                    with st.expander("Conclusion from this RQ1 grid", expanded=True):
-                        for line in summarize_rq1(grid_results):
-                            st.markdown(f"- {line}")
-                    fig = px.imshow(
-                        pivot,
-                        labels={"x": "Misaligned fraction ϕ", "y": "Cost magnitude ℓ", "color": "B2 regret"},
-                        aspect="auto",
-                        text_auto=".2f",
-                        color_continuous_scale="RdYlGn_r",
-                    )
-                    fig.update_layout(height=560)
                     st.plotly_chart(fig, use_container_width=True)
+
+                    st.markdown("### 📋 Empirical Data Tables")
+                    tab_phi, tab_ell = st.tabs(["Sweep 1: Varying Fraction ϕ (Fixed ℓ = 3.0)", "Sweep 2: Varying Deflector Cost ℓ (Fixed ϕ = 0.5)"])
+                    with tab_phi:
+                        table_cols = [
+                            c for c in [
+                                "deflector_ratio", "B2 Regret", "B2 Regret Std", "Mechanism Regret", "Mechanism Regret Std",
+                                "B2 Miss Loss", "Mechanism Miss Loss", "B2 Excess Cost", "Mechanism Excess Cost",
+                                "B2 Resolution Rate", "Mechanism Resolution Rate", "Runs"
+                            ] if c in df_phi.columns
+                        ]
+                        st.dataframe(df_phi[table_cols], hide_index=True, use_container_width=True)
+                        st.download_button(
+                            "📥 Download Sweep 1 CSV",
+                            data=df_phi.to_csv(index=False),
+                            file_name="rq1_phi_sweep.csv",
+                            mime="text/csv",
+                            key="dl_rq1_phi",
+                        )
+                    with tab_ell:
+                        table_cols_ell = [
+                            c for c in [
+                                "deflector_ell", "B2 Regret", "B2 Regret Std", "Mechanism Regret", "Mechanism Regret Std",
+                                "B2 Miss Loss", "Mechanism Miss Loss", "B2 Excess Cost", "Mechanism Excess Cost",
+                                "B2 Resolution Rate", "Mechanism Resolution Rate", "Runs"
+                            ] if c in df_ell.columns
+                        ]
+                        st.dataframe(df_ell[table_cols_ell], hide_index=True, use_container_width=True)
+                        st.download_button(
+                            "📥 Download Sweep 2 CSV",
+                            data=df_ell.to_csv(index=False),
+                            file_name="rq1_ell_sweep.csv",
+                            mime="text/csv",
+                            key="dl_rq1_ell",
+                        )
 
                 elif card.key == "rq2_incentive_recovery":
                     st.markdown("### Recovery and mechanism cost")

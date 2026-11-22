@@ -406,7 +406,7 @@ Concurrently, agents update their expected credit estimate $\bar{\chi}_i(t) = (1
 \section{Results and Discussion}
 \label{sec:results}
 
-In this section, we present our empirical findings divided into two distinct components: (i) algorithmic \textbf{simulation results} that evaluate our mechanism's welfare, efficiency, and robustness across strategic environments, and (ii) \textbf{experimental testbed results} evaluating the framework on real-world software repository workflows.
+In this section, we present our empirical findings divided into two distinct components: (i) algorithmic \textbf{simulation results} that evaluate our mechanism's welfare, efficiency, and robustness across strategic environments, and (ii) \textbf{experimental results} evaluating the framework on real-world software repository workflows.
 
 \subsection{Simulation Results: Mechanism Performance and Benchmarks}
 \label{subsec:sim_results}
@@ -417,7 +417,7 @@ We evaluate the proposed mechanism ($\mathcal{M}$) across diverse strategic and 
 \centering
 \small
 \renewcommand{\arraystretch}{0.96}
-\caption{Comprehensive Benchmark Performance across Operational Regimes ($T=100$ rounds, seed = 42). Mechanism $\mathcal{M}$ is evaluated against all applicable baselines across six canonical environments, matching empirical outputs in \texttt{benchmark\_results.json}.}
+\caption{Comprehensive Benchmark Performance across Operational Regimes ($T=100$ rounds, seed = 42). Mechanism $\mathcal{M}$ is evaluated against all applicable baselines across six canonical environments with preset values for different parameters.}
 \label{tab:benchmark_results}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{llccccccc}
@@ -482,6 +482,44 @@ $^\dagger$Net welfare exceeds gross welfare in Acquisition Hoarding due to colle
     \end{itemize}
 
     \item \textbf{Immunity to Documentation Drift:} When architectural documentation decays ($\rho = 0.70$), static description routing (B1) crashes into negative welfare ($W = -1.21$, resolution $19.0\%$). By contrast, Mechanism $\mathcal{M}$ maintains stable welfare ($W = 4.78$, resolution $66.0\%$) by querying live private evidence from agents rather than trusting stale registry catalogs.
+\end{enumerate}
+
+% -----------------------------------------------------------------------------
+\subsection{RQ1: Cost of Misalignment and Regret Decomposition}
+\label{subsec:rq1_misalignment}
+
+Research Question 1 investigates how unmediated polling (B2) degrades compared to Mechanism $\mathcal{M}$ as private misalignment intensifies, and how the resulting social welfare regret decomposes into its constituent components: miss loss ($\Delta V$) and excess cost ($\Delta C$).
+
+\paragraph{Experimental Configuration and Reliability.}
+To isolate the marginal effects of misalignment, we execute two orthogonal parameter sweeps:
+\begin{enumerate}
+    \item \textbf{Deflector Fraction Sweep ($\phi$):} $\phi \in [0.0, 1.0]$ in increments of $0.10$, at fixed deflection cost $\ell = 3.0$.
+    \item \textbf{Cost Magnitude Sweep ($\ell$):} $\ell \in [0.0, 8.0]$ in increments of $1.0$, at fixed deflector fraction $\phi = 0.50$.
+\end{enumerate}
+Both sweeps are evaluated on a controlled environment of $N = 12$ agents over $T = 60$ sequential incidents under conjunctive task resolution ($k \in [1, 5]$). Mechanism parameters are held fixed at their baseline calibration ($\lambda = 2.5$, audit rate $\alpha = 0.20$, penalty $F = 10.0$, static mode $\beta_{\mathrm{load}} = 0$).
+
+\emph{Reliability and Methodological Soundness:} These empirical curves can be firmly relied upon due to two design guarantees:
+\begin{itemize}
+    \item \textbf{Multi-Seed Replicate Averaging:} Every parameter point is evaluated across $K = 5$ independent pseudorandom seeds ($\mathrm{seed} = 42 + r, r \in \{0, \dots, 4\}$), averaging out stochastic variations in interaction graph topology, private observation noise, and task arrival order. The shaded bands in Figure~\ref{fig:rq1_misalignment} report $\pm 1$ standard deviation of seed sensitivity.
+    \item \textbf{Exact Combinatorial Optimization:} The mechanism evaluates candidate owner allocations via exact bitmask tensor enumeration ($2^{12} = 4,096$ subsets), eliminating heuristic solver noise so that all observed welfare deviations strictly reflect strategic information asymmetry and the mathematical identity $\mathrm{Regret} = \Delta V + \Delta C$.
+\end{itemize}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\textwidth]{rq1_misalignment_cost.pdf}
+\caption{Regret Decomposition across Misalignment Parameters (Averaged over $K=5$ independent seeds, $N=12$, $T=60$). Solid curves depict Mechanism $\mathcal{M}$ (with shaded $\pm 1$ std bands across seeds); dashed curves depict unmediated Polling (B2). Panel (a) sweeps deflector fraction $\phi \in [0.0, 1.0]$ at fixed $\ell = 3.0$. Panel (b) sweeps deflection cost $\ell \in [0.0, 8.0]$ at fixed $\phi = 0.5$. Note the exact additive identity $\mathrm{Regret} = \Delta V + \Delta C$ throughout.}
+\label{fig:rq1_misalignment}
+\end{figure}
+
+\paragraph{Empirical Findings and Discussion.}
+Figure~\ref{fig:rq1_misalignment} reveals three fundamental insights governing strategic task ownership:
+
+\begin{enumerate}
+    \item \textbf{Compound Failure in Conjunctive Polling:} In conjunctive tasks, resolving an incident requires unanimous participation of all required owners ($S^* \subseteq A$). The probability that an uncorrupted, truthful team exists decays geometrically as $(1 - \phi)^k$. As $\phi$ increases from $0.0$ to $0.4$, unmediated polling (B2) suffers an immediate breakdown: Miss Loss ($\Delta V$) surges from $3.73$ to $13.85$, driving total regret to its peak at $14.74$. In contrast, Mechanism $\mathcal{M}$ leverages strictly proper Brier scoring ($\lambda = 2.5$) to discipline self-reports, keeping regret significantly lower ($9.90$ at $\phi = 0.30$) and delaying severe miss loss until deflector density approaches unity.
+    
+    \item \textbf{The Zero-Scoring Cliff and B2 Invariance:} Panel (b) uncovers a striking behavioral discontinuity. Under unmediated polling ($\lambda = 0$), agents face no penalty for dishonesty. Consequently, any non-zero deflection cost ($\ell > 0$) causes deflecting agents to collapse their self-reports maximally to $r_i = 0$. This produces a sharp threshold cliff: B2 regret jumps discontinuously from $6.87$ at $\ell = 0$ to $14.64$ at $\ell = 1.0$, and remains completely flat across all $\ell \in [1.0, 8.0]$. Under Mechanism $\mathcal{M}$, the trade-off between scoring utility and deflection cost is continuous, ensuring that report shading scales gracefully with $\ell / \lambda$ and regret grows smoothly from $7.44$ to $14.46$.
+    
+    \item \textbf{The Cost-Avoidance Paradox ($\Delta C < 0$):} Under unmediated polling at high deflector fractions ($\phi \ge 0.60$), Excess Cost drops into negative territory, reaching $\Delta C = -3.06$ at $\phi = 1.0$. This negative excess cost is not an efficiency gain; rather, it reflects catastrophic incident abandonment. Because all candidates disclaim ownership, the router assigns nobody, driving execution expenditure to zero while forfeiting the entire task resolution value ($R = 10$). The additive identity $\mathrm{Regret} = \Delta V + \Delta C$ correctly exposes this pathology: the modest decline in B2 regret at extreme $\phi$ is merely an artifact of cost expenditure ceasing entirely while miss loss saturates at its theoretical maximum.
 \end{enumerate}
 
 % -----------------------------------------------------------------------------
